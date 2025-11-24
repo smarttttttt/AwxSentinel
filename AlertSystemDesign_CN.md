@@ -549,30 +549,15 @@ ACTIVE → RESOLVED (用户手动解决)
 
 ```mermaid
 erDiagram
-    MERCHANT ||--o{ ALERT : "receives"
-    MERCHANT ||--o{ ALERT_CONFIG : "configures"
-    MERCHANT ||--o{ FREQUENCY_CONTROL_CONFIG : "has"
-
     ALERT ||--o{ NOTIFICATION : "generates"
-    ALERT ||--|{ ALERT_METRIC : "contains"
+    ALERT ||--o{ ALERT_COMMENT : "has"
     ALERT }o--|| ALERT_TEMPLATE : "uses"
-
-    NOTIFICATION }o--|| NOTIFICATION_CHANNEL : "sends_via"
 
     ALERT_CONFIG ||--o{ TRIGGER_CONDITION : "defines"
 
-    MERCHANT {
-        uuid id PK
-        string merchant_code UK
-        string name
-        boolean is_active
-        timestamp created_at
-        timestamp updated_at
-    }
-
     ALERT {
         uuid id PK
-        uuid merchant_id FK
+        uuid account_id
         string alert_type
         string original_severity
         string current_severity
@@ -585,7 +570,6 @@ erDiagram
         int occurrence_count
         timestamp session_started_at
         timestamp session_last_active
-        int session_timeout_minutes
         string session_status
         int aggregation_window_hours
         timestamp first_triggered_at
@@ -593,21 +577,23 @@ erDiagram
         json escalation_history
         timestamp last_escalated_at
         timestamp resolved_at
-        varchar namespace
-        varchar checkpoint
+        json metadata
+        json namespace
+        json checkpoint
         timestamp created_at
         timestamp updated_at
     }
 
-    ALERT_METRIC {
+    ALERT_COMMENT {
         uuid id PK
         uuid alert_id FK
-        string metric_name
-        string metric_type
-        decimal metric_value
-        decimal threshold_value
+        string comment_type
+        text content
         json metadata
-        timestamp recorded_at
+        string created_by
+        json namespace
+        json checkpoint
+        timestamp created_at
     }
 
     ALERT_TEMPLATE {
@@ -618,6 +604,8 @@ erDiagram
         json default_config
         boolean is_active
         int version
+        json namespace
+        json checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -625,7 +613,7 @@ erDiagram
     NOTIFICATION {
         uuid id PK
         uuid alert_id FK
-        uuid channel_id FK
+        string channel_type
         string status
         text content
         json metadata
@@ -634,23 +622,19 @@ erDiagram
         timestamp failed_at
         text error_message
         int retry_count
-    }
-
-    NOTIFICATION_CHANNEL {
-        uuid id PK
-        string channel_type
-        string channel_name
-        json config
-        boolean is_active
+        json namespace
+        json checkpoint
     }
 
     ALERT_CONFIG {
         uuid id PK
-        uuid merchant_id FK
+        uuid account_id
         string alert_type
         boolean enabled
         json channel_preferences
         json notification_settings
+        json namespace
+        json checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -664,18 +648,8 @@ erDiagram
         string time_window
         int priority
         boolean is_active
-    }
-
-    FREQUENCY_CONTROL_CONFIG {
-        uuid id PK
-        uuid merchant_id FK
-        string alert_type
-        int max_alerts_per_hour
-        int max_alerts_per_day
-        int min_interval_minutes
-        boolean enabled
-        timestamp created_at
-        timestamp updated_at
+        json namespace
+        json checkpoint
     }
 ```
 
@@ -697,7 +671,6 @@ erDiagram
 - `occurrence_count`: 触发次数计数器
 - `session_started_at`: 会话开始时间
 - `session_last_active`: 会话最后活跃时间
-- `session_timeout_minutes`: 会话超时时长（分钟）
 - `session_status`: 会话状态（ACTIVE, EXPIRED, RESOLVED）
 - `aggregation_window_hours`: 聚合窗口时长（小时）
 - `first_triggered_at`: 首次触发时间
@@ -707,12 +680,27 @@ erDiagram
 - `escalation_history`: 严重程度提升历史记录（JSON格式）
 - `last_escalated_at`: 最后一次提升时间
 
-**通用字段**：
-- `namespace`: 命名空间，用于多租户隔离
-- `checkpoint`: 检查点标记，用于数据同步和恢复
+**元数据字段**：
+- `metadata`: 首次或最新触发的完整元数据（JSON格式），包含原始metrics、来源系统等信息
 
-#### 4.2.2 Alert Metric (警报指标)
-记录触发警报的具体指标数据，支持多个指标。
+**通用字段**：
+- `namespace`: 命名空间（JSON格式），用于多租户隔离
+- `checkpoint`: 检查点标记（JSON格式），用于数据同步和恢复
+
+#### 4.2.2 Alert Comment (警报评论/事件)
+记录Alert的每次触发事件、用户评论和系统日志。
+
+**关键字段**：
+- `comment_type`: 评论类型（TRIGGER_EVENT: 触发事件, SEVERITY_ESCALATION: 严重程度提升, USER_NOTE: 用户备注, SYSTEM_LOG: 系统日志）
+- `content`: 评论内容或事件描述
+- `metadata`: 本次触发的元数据快照（JSON格式），包含触发时的metrics、严重程度变化等信息
+- `created_by`: 创建者（system 或 用户ID）
+
+**使用场景**：
+- 会话更新时记录触发事件
+- 严重程度提升时记录变化详情
+- 用户手动添加备注
+- 系统自动记录关键操作
 
 #### 4.2.3 Alert Template (警报模板)
 定义不同类型警报的Prompt模板，用于生成AI摘要。
@@ -742,15 +730,7 @@ Format your response as JSON:
 }
 ```
 
-#### 4.2.4 Frequency Control Config (频率控制配置)
-定义商户维度和时间维度的频率限制规则。
-
-**配置示例**：
-- 每小时最多5条警报
-- 每天最多20条警报
-- 相同类型警报最小间隔15分钟
-
-#### 4.2.5 Trigger Condition (触发条件)
+#### 4.2.4 Trigger Condition (触发条件)
 定义基于Metrics的触发规则，支持多条件组合。
 
 **条件示例**：

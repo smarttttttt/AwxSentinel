@@ -549,30 +549,15 @@ ACTIVE → RESOLVED (manually resolved by user)
 
 ```mermaid
 erDiagram
-    MERCHANT ||--o{ ALERT : "receives"
-    MERCHANT ||--o{ ALERT_CONFIG : "configures"
-    MERCHANT ||--o{ FREQUENCY_CONTROL_CONFIG : "has"
-
     ALERT ||--o{ NOTIFICATION : "generates"
-    ALERT ||--|{ ALERT_METRIC : "contains"
+    ALERT ||--o{ ALERT_COMMENT : "has"
     ALERT }o--|| ALERT_TEMPLATE : "uses"
-
-    NOTIFICATION }o--|| NOTIFICATION_CHANNEL : "sends_via"
 
     ALERT_CONFIG ||--o{ TRIGGER_CONDITION : "defines"
 
-    MERCHANT {
-        uuid id PK
-        string merchant_code UK
-        string name
-        boolean is_active
-        timestamp created_at
-        timestamp updated_at
-    }
-
     ALERT {
         uuid id PK
-        uuid merchant_id FK
+        uuid account_id
         string alert_type
         string original_severity
         string current_severity
@@ -585,7 +570,6 @@ erDiagram
         int occurrence_count
         timestamp session_started_at
         timestamp session_last_active
-        int session_timeout_minutes
         string session_status
         int aggregation_window_hours
         timestamp first_triggered_at
@@ -593,21 +577,23 @@ erDiagram
         json escalation_history
         timestamp last_escalated_at
         timestamp resolved_at
-        varchar namespace
-        varchar checkpoint
+        json metadata
+        json namespace
+        json checkpoint
         timestamp created_at
         timestamp updated_at
     }
 
-    ALERT_METRIC {
+    ALERT_COMMENT {
         uuid id PK
         uuid alert_id FK
-        string metric_name
-        string metric_type
-        decimal metric_value
-        decimal threshold_value
+        string comment_type
+        text content
         json metadata
-        timestamp recorded_at
+        string created_by
+        json namespace
+        json checkpoint
+        timestamp created_at
     }
 
     ALERT_TEMPLATE {
@@ -618,6 +604,8 @@ erDiagram
         json default_config
         boolean is_active
         int version
+        json namespace
+        json checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -625,7 +613,7 @@ erDiagram
     NOTIFICATION {
         uuid id PK
         uuid alert_id FK
-        uuid channel_id FK
+        string channel_type
         string status
         text content
         json metadata
@@ -634,23 +622,19 @@ erDiagram
         timestamp failed_at
         text error_message
         int retry_count
-    }
-
-    NOTIFICATION_CHANNEL {
-        uuid id PK
-        string channel_type
-        string channel_name
-        json config
-        boolean is_active
+        json namespace
+        json checkpoint
     }
 
     ALERT_CONFIG {
         uuid id PK
-        uuid merchant_id FK
+        uuid account_id
         string alert_type
         boolean enabled
         json channel_preferences
         json notification_settings
+        json namespace
+        json checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -664,18 +648,8 @@ erDiagram
         string time_window
         int priority
         boolean is_active
-    }
-
-    FREQUENCY_CONTROL_CONFIG {
-        uuid id PK
-        uuid merchant_id FK
-        string alert_type
-        int max_alerts_per_hour
-        int max_alerts_per_day
-        int min_interval_minutes
-        boolean enabled
-        timestamp created_at
-        timestamp updated_at
+        json namespace
+        json checkpoint
     }
 ```
 
@@ -697,7 +671,6 @@ Stores core alert information, including AI-generated summary content and aggreg
 - `occurrence_count`: Trigger count counter
 - `session_started_at`: Session start time
 - `session_last_active`: Session last active time
-- `session_timeout_minutes`: Session timeout duration (minutes)
 - `session_status`: Session status (ACTIVE, EXPIRED, RESOLVED)
 - `aggregation_window_hours`: Aggregation window duration (hours)
 - `first_triggered_at`: First trigger time
@@ -707,12 +680,27 @@ Stores core alert information, including AI-generated summary content and aggreg
 - `escalation_history`: Severity escalation history (JSON format)
 - `last_escalated_at`: Last escalation time
 
-**Common Fields**:
-- `namespace`: Namespace for multi-tenant isolation
-- `checkpoint`: Checkpoint marker for data sync and recovery
+**Metadata Field**:
+- `metadata`: Complete metadata of first or latest trigger (JSON format), including raw metrics, source system, etc.
 
-#### 4.2.2 Alert Metric
-Records specific metric data that triggered the alert, supports multiple metrics.
+**Common Fields**:
+- `namespace`: Namespace (JSON format) for multi-tenant isolation
+- `checkpoint`: Checkpoint marker (JSON format) for data sync and recovery
+
+#### 4.2.2 Alert Comment
+Records each trigger event, user comments, and system logs for an Alert.
+
+**Key Fields**:
+- `comment_type`: Comment type (TRIGGER_EVENT: trigger event, SEVERITY_ESCALATION: severity escalation, USER_NOTE: user note, SYSTEM_LOG: system log)
+- `content`: Comment content or event description
+- `metadata`: Metadata snapshot of this trigger (JSON format), including metrics at trigger time, severity changes, etc.
+- `created_by`: Creator (system or user ID)
+
+**Use Cases**:
+- Record trigger events during session updates
+- Record details during severity escalation
+- User manually adds notes
+- System automatically logs critical operations
 
 #### 4.2.3 Alert Template
 Defines Prompt templates for different types of alerts, used to generate AI summaries.
@@ -742,15 +730,7 @@ Format your response as JSON:
 }
 ```
 
-#### 4.2.4 Frequency Control Config
-Defines frequency limit rules at merchant and time dimensions.
-
-**Configuration Example**:
-- Maximum 5 alerts per hour
-- Maximum 20 alerts per day
-- Minimum interval of 15 minutes between alerts of the same type
-
-#### 4.2.5 Trigger Condition
+#### 4.2.4 Trigger Condition
 Defines trigger rules based on Metrics, supports multiple condition combinations.
 
 **Condition Examples**:
