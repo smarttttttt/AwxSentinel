@@ -393,17 +393,18 @@ flowchart TD
     Start([触发条件满足]) --> CalcFingerprint[计算Condition Fingerprint<br/>MD5哈希算法]
     CalcFingerprint --> CheckSession{检查活跃会话<br/>session_status=ACTIVE?<br/>last_active within timeout?}
 
-    CheckSession -->|是| UpdateSession[更新会话<br/>session_last_active=now]
-    CheckSession -->|否| ExpireOldSession[过期旧会话<br/>session_status=EXPIRED]
+    CheckSession -->|是| UpdateSession[更新会话<br/>session_last_active=now<br/>保持session_status=ACTIVE]
+    CheckSession -->|否| ExpireSession[标记会话过期<br/>session_status=EXPIRED]
 
-    ExpireOldSession --> CheckWindow{检查滑动窗口<br/>24h内有相同fingerprint?}
+    ExpireSession --> CheckWindow{检查滑动窗口<br/>24h内有相同fingerprint?}
 
-    CheckWindow -->|是| CreateNewSession[创建新会话<br/>关联到现有Alert]
-    CheckWindow -->|否| CreateNewAlert[创建新Alert<br/>初始化所有字段]
+    CheckWindow -->|是| UseExistingAlert[使用现有Alert<br/>不创建新会话]
+    CheckWindow -->|否| CreateNewAlert[创建新Alert<br/>初始化所有字段<br/>session_status=ACTIVE]
 
     UpdateSession --> IncrementCount[递增occurrence_count<br/>更新last_triggered_at]
-    CreateNewSession --> IncrementCount
-    CreateNewAlert --> SetInitialValues[设置初始值<br/>occurrence_count=1<br/>original_severity]
+    UseExistingAlert --> IncrementCount
+
+    CreateNewAlert --> SetInitialValues[设置初始值<br/>occurrence_count=1<br/>original_severity<br/>session_started_at=now]
 
     SetInitialValues --> CreateComment[创建Alert Comment<br/>type=TRIGGER_EVENT<br/>保存metrics_snapshot]
     IncrementCount --> CreateComment
@@ -428,6 +429,7 @@ flowchart TD
     style Start fill:#e1f5ff
     style CreateNewAlert fill:#fff4e1
     style UpdateSession fill:#fff4e1
+    style UseExistingAlert fill:#e1ffe1
     style EscalateSeverity fill:#ffe1e1
     style ForceNotify fill:#e1ffe1
     style NeedNotify fill:#e1ffe1
@@ -526,7 +528,7 @@ flowchart TD
 
 **会话状态流转**：
 ```
-ACTIVE → EXPIRED → (可能重新激活为ACTIVE)
+ACTIVE → EXPIRED (超时后自动过期)
 ACTIVE → RESOLVED (用户手动解决)
 ```
 
@@ -535,9 +537,16 @@ ACTIVE → RESOLVED (用户手动解决)
 - 可按Alert类型配置不同的超时时间
 - 例如：卡测试攻击建议15分钟，速率攻击建议30分钟
 
-**会话重新激活**：
-- 如果EXPIRED的会话在滑动窗口内再次被触发，可以创建新会话关联到同一Alert
-- 这样可以追踪间歇性攻击模式
+**会话过期后的处理**：
+- 会话过期（EXPIRED）后，如果在滑动窗口（24小时）内再次触发相同条件：
+  - 直接使用现有Alert（不创建新会话）
+  - 在该Alert上创建新的Comment记录本次触发
+  - 递增occurrence_count，更新last_triggered_at
+  - 保持session_status=EXPIRED（不重新激活会话）
+- 这样设计的好处：
+  - 一个Alert记录完整的攻击历史
+  - 用户更容易理解，避免"会话重新激活"的复杂概念
+  - Comment清晰记录每次触发的时间和指标
 
 ---
 

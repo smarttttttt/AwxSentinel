@@ -393,17 +393,18 @@ flowchart TD
     Start([Trigger Condition Met]) --> CalcFingerprint[Calculate Condition Fingerprint<br/>MD5 Hash Algorithm]
     CalcFingerprint --> CheckSession{Check Active Session<br/>session_status=ACTIVE?<br/>last_active within timeout?}
 
-    CheckSession -->|Yes| UpdateSession[Update Session<br/>session_last_active=now]
-    CheckSession -->|No| ExpireOldSession[Expire Old Session<br/>session_status=EXPIRED]
+    CheckSession -->|Yes| UpdateSession[Update Session<br/>session_last_active=now<br/>Keep session_status=ACTIVE]
+    CheckSession -->|No| ExpireSession[Mark Session Expired<br/>session_status=EXPIRED]
 
-    ExpireOldSession --> CheckWindow{Check Sliding Window<br/>Same fingerprint within 24h?}
+    ExpireSession --> CheckWindow{Check Sliding Window<br/>Same fingerprint within 24h?}
 
-    CheckWindow -->|Yes| CreateNewSession[Create New Session<br/>Link to existing Alert]
-    CheckWindow -->|No| CreateNewAlert[Create New Alert<br/>Initialize all fields]
+    CheckWindow -->|Yes| UseExistingAlert[Use Existing Alert<br/>No new session created]
+    CheckWindow -->|No| CreateNewAlert[Create New Alert<br/>Initialize all fields<br/>session_status=ACTIVE]
 
     UpdateSession --> IncrementCount[Increment occurrence_count<br/>Update last_triggered_at]
-    CreateNewSession --> IncrementCount
-    CreateNewAlert --> SetInitialValues[Set Initial Values<br/>occurrence_count=1<br/>original_severity]
+    UseExistingAlert --> IncrementCount
+
+    CreateNewAlert --> SetInitialValues[Set Initial Values<br/>occurrence_count=1<br/>original_severity<br/>session_started_at=now]
 
     SetInitialValues --> CreateComment[Create Alert Comment<br/>type=TRIGGER_EVENT<br/>Save metrics_snapshot]
     IncrementCount --> CreateComment
@@ -428,6 +429,7 @@ flowchart TD
     style Start fill:#e1f5ff
     style CreateNewAlert fill:#fff4e1
     style UpdateSession fill:#fff4e1
+    style UseExistingAlert fill:#e1ffe1
     style EscalateSeverity fill:#ffe1e1
     style ForceNotify fill:#e1ffe1
     style NeedNotify fill:#e1ffe1
@@ -526,7 +528,7 @@ The system automatically escalates Alert severity based on the following rules:
 
 **Session Status Transitions**:
 ```
-ACTIVE → EXPIRED → (may reactivate to ACTIVE)
+ACTIVE → EXPIRED (automatically expires after timeout)
 ACTIVE → RESOLVED (manually resolved by user)
 ```
 
@@ -535,9 +537,16 @@ ACTIVE → RESOLVED (manually resolved by user)
 - Configurable per Alert type
 - Example: Card testing attacks suggest 15 minutes, velocity attacks suggest 30 minutes
 
-**Session Reactivation**:
-- If an EXPIRED session is triggered again within the sliding window, a new session can be created linked to the same Alert
-- This tracks intermittent attack patterns
+**Handling After Session Expiration**:
+- When a session expires (EXPIRED) and the same condition triggers again within the sliding window (24 hours):
+  - Directly use the existing Alert (no new session created)
+  - Create a new Comment on that Alert to record this trigger
+  - Increment occurrence_count, update last_triggered_at
+  - Keep session_status=EXPIRED (do not reactivate session)
+- Benefits of this design:
+  - One Alert records the complete attack history
+  - Easier for users to understand, avoiding the complex concept of "session reactivation"
+  - Comments clearly record each trigger's time and metrics
 
 ---
 
