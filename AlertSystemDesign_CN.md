@@ -552,6 +552,7 @@ erDiagram
     ALERT ||--o{ NOTIFICATION : "generates"
     ALERT ||--o{ ALERT_COMMENT : "has"
     ALERT }o--|| ALERT_TEMPLATE : "uses"
+    ALERT_COMMENT ||--o{ NOTIFICATION : "triggers"
 
     ALERT_CONFIG ||--o{ TRIGGER_CONDITION : "defines"
 
@@ -571,7 +572,6 @@ erDiagram
         timestamp session_started_at
         timestamp session_last_active
         string session_status
-        int aggregation_window_hours
         timestamp first_triggered_at
         timestamp last_triggered_at
         json escalation_history
@@ -615,6 +615,7 @@ erDiagram
     NOTIFICATION {
         uuid id PK
         uuid alert_id FK
+        uuid comment_id FK
         string channel_type
         string status
         text content
@@ -674,7 +675,6 @@ erDiagram
 - `session_started_at`: 会话开始时间
 - `session_last_active`: 会话最后活跃时间
 - `session_status`: 会话状态（ACTIVE, EXPIRED, RESOLVED）
-- `aggregation_window_hours`: 聚合窗口时长（小时）
 - `first_triggered_at`: 首次触发时间
 - `last_triggered_at`: 最后触发时间
 
@@ -706,7 +706,28 @@ erDiagram
 - **USER_NOTE**：用户手动添加备注，`metrics_snapshot` 为空，可选填充 `metadata` 记录用户信息
 - **SYSTEM_LOG**：系统自动记录关键操作，可选填充 `metadata` 记录操作详情
 
-#### 4.2.3 Alert Template (警报模板)
+#### 4.2.3 Notification (通知)
+记录所有发送的通知，支持通过 Alert 或 Comment 触发。
+
+**关键字段**：
+- `alert_id`: 关联的 Alert ID（必填），用于追溯通知所属的告警
+- `comment_id`: 关联的 Comment ID（可为空），如果通知是由 Comment 触发则填充此字段
+- `channel_type`: 通知渠道类型（slack, sms, webapp）
+- `status`: 通知状态（pending, sent, delivered, failed）
+- `content`: 通知内容
+- `metadata`: 通知元数据（JSON格式），存储通知相关的额外信息，如优先级、提及用户等
+
+**触发来源判断**：
+- `comment_id IS NULL`: 由 Alert 直接触发的通知（如首次创建告警）
+- `comment_id IS NOT NULL`: 由 Comment 触发的通知（如严重程度提升、用户备注）
+
+**使用场景**：
+- **Alert 直接触发**：首次创建 Alert 时发送初始通知
+- **严重程度提升触发**：SEVERITY_ESCALATION 类型的 Comment 触发紧急通知
+- **用户备注触发**：USER_NOTE 类型的 Comment 触发团队协作通知
+- **系统事件触发**：SYSTEM_LOG 类型的 Comment 触发状态变更通知
+
+#### 4.2.4 Alert Template (警报模板)
 定义不同类型警报的Prompt模板，用于生成AI摘要。
 
 **Prompt模板示例**：
@@ -734,7 +755,7 @@ Format your response as JSON:
 }
 ```
 
-#### 4.2.4 Trigger Condition (触发条件)
+#### 4.2.5 Trigger Condition (触发条件)
 定义基于Metrics的触发规则，支持多条件组合。
 
 **条件示例**：

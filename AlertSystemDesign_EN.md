@@ -552,6 +552,7 @@ erDiagram
     ALERT ||--o{ NOTIFICATION : "generates"
     ALERT ||--o{ ALERT_COMMENT : "has"
     ALERT }o--|| ALERT_TEMPLATE : "uses"
+    ALERT_COMMENT ||--o{ NOTIFICATION : "triggers"
 
     ALERT_CONFIG ||--o{ TRIGGER_CONDITION : "defines"
 
@@ -571,7 +572,6 @@ erDiagram
         timestamp session_started_at
         timestamp session_last_active
         string session_status
-        int aggregation_window_hours
         timestamp first_triggered_at
         timestamp last_triggered_at
         json escalation_history
@@ -615,6 +615,7 @@ erDiagram
     NOTIFICATION {
         uuid id PK
         uuid alert_id FK
+        uuid comment_id FK
         string channel_type
         string status
         text content
@@ -674,7 +675,6 @@ Stores core alert information, including AI-generated summary content and aggreg
 - `session_started_at`: Session start time
 - `session_last_active`: Session last active time
 - `session_status`: Session status (ACTIVE, EXPIRED, RESOLVED)
-- `aggregation_window_hours`: Aggregation window duration (hours)
 - `first_triggered_at`: First trigger time
 - `last_triggered_at`: Last trigger time
 
@@ -706,7 +706,28 @@ Records each trigger event, user comments, and system logs for an Alert.
 - **USER_NOTE**: User manually adds notes, `metrics_snapshot` is null, optionally populate `metadata` with user info
 - **SYSTEM_LOG**: System automatically logs critical operations, optionally populate `metadata` with operation details
 
-#### 4.2.3 Alert Template
+#### 4.2.3 Notification
+Records all sent notifications, can be triggered by Alert or Comment.
+
+**Key Fields**:
+- `alert_id`: Associated Alert ID (required), used to trace the alert that this notification belongs to
+- `comment_id`: Associated Comment ID (nullable), populated if the notification is triggered by a Comment
+- `channel_type`: Notification channel type (slack, sms, webapp)
+- `status`: Notification status (pending, sent, delivered, failed)
+- `content`: Notification content
+- `metadata`: Notification metadata (JSON format), stores additional notification-related information, such as priority, mentioned users, etc.
+
+**Trigger Source Determination**:
+- `comment_id IS NULL`: Notification directly triggered by Alert (e.g., alert creation)
+- `comment_id IS NOT NULL`: Notification triggered by Comment (e.g., severity escalation, user note)
+
+**Use Cases**:
+- **Alert Direct Trigger**: Send initial notification when Alert is first created
+- **Severity Escalation Trigger**: SEVERITY_ESCALATION type Comment triggers urgent notification
+- **User Note Trigger**: USER_NOTE type Comment triggers team collaboration notification
+- **System Event Trigger**: SYSTEM_LOG type Comment triggers status change notification
+
+#### 4.2.4 Alert Template
 Defines Prompt templates for different types of alerts, used to generate AI summaries.
 
 **Prompt Template Example**:
@@ -734,7 +755,7 @@ Format your response as JSON:
 }
 ```
 
-#### 4.2.4 Trigger Condition
+#### 4.2.5 Trigger Condition
 Defines trigger rules based on Metrics, supports multiple condition combinations.
 
 **Condition Examples**:
