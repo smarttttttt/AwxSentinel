@@ -386,12 +386,12 @@ The Alert system adopts a **hybrid aggregation strategy**, combining session-bas
   - Duration exceeds 2 hours → escalate to P1
 - **Advantages**: Automatically identify severe attacks, increase response priority
 
-#### 3.6.2 Aggregation Flow Diagram
+#### 3.6.2 Alert Aggregation Logic Flow
 
 ```mermaid
 flowchart TD
-    Start([Trigger Condition Met]) --> CalcFingerprint[Calculate Condition Fingerprint<br/>MD5 Hash]
-    CalcFingerprint --> CheckSession{Check Active Session<br/>session_status=ACTIVE<br/>last_active within timeout?}
+    Start([Trigger Condition Met]) --> CalcFingerprint[Calculate Condition Fingerprint<br/>MD5 Hash Algorithm]
+    CalcFingerprint --> CheckSession{Check Active Session<br/>session_status=ACTIVE?<br/>last_active within timeout?}
 
     CheckSession -->|Yes| UpdateSession[Update Session<br/>session_last_active=now]
     CheckSession -->|No| ExpireOldSession[Expire Old Session<br/>session_status=EXPIRED]
@@ -405,61 +405,91 @@ flowchart TD
     CreateNewSession --> IncrementCount
     CreateNewAlert --> SetInitialValues[Set Initial Values<br/>occurrence_count=1<br/>original_severity]
 
-    SetInitialValues --> CreateComment
-    IncrementCount --> CreateComment[Create Alert Comment<br/>type=TRIGGER_EVENT]
+    SetInitialValues --> CreateComment[Create Alert Comment<br/>type=TRIGGER_EVENT<br/>Save metrics_snapshot]
+    IncrementCount --> CreateComment
 
     CreateComment --> CheckEscalation{Need Severity Escalation?<br/>Check escalation rules}
 
     CheckEscalation -->|Yes| EscalateSeverity[Escalate current_severity<br/>Record escalation_history]
-    CheckEscalation -->|No| EvalNotification[Evaluate Notification Strategy]
+    CheckEscalation -->|No| DecideNotify{Should Notify?}
 
     EscalateSeverity --> LogEscalation[Log Escalation Event]
-    LogEscalation --> ForceNotify[Force Send Notification<br/>Reason: Severity Escalated]
+    LogEscalation --> ForceNotify[Mark: Need Notification<br/>Reason: Severity Escalated]
 
-    EvalNotification --> StrategyType{Notification Strategy Type?}
+    DecideNotify -->|Yes| NeedNotify[Mark: Need Notification]
+    DecideNotify -->|No| NoNotify[Mark: No Notification<br/>Reason: Aggregating]
 
-    StrategyType -->|First Trigger| CheckFirst{Is First Trigger?}
-    StrategyType -->|Threshold Based| CheckThreshold{Threshold Reached?}
-    StrategyType -->|Interval Based| CheckInterval{Interval Exceeded?}
+    ForceNotify --> SaveAlert[Save Alert to Database]
+    NeedNotify --> SaveAlert
+    NoNotify --> SaveAlert
 
-    CheckFirst -->|Yes| ShouldNotify[Should Send Notification]
-    CheckFirst -->|No| NoNotify[No Notification]
-
-    CheckThreshold -->|Yes| ShouldNotify
-    CheckThreshold -->|No| NoNotify
-
-    CheckInterval -->|Yes| ShouldNotify
-    CheckInterval -->|No| NoNotify
-
-    ForceNotify --> CreateNotifTask[Create Notification Task]
-    ShouldNotify --> CreateNotifTask
-
-    CreateNotifTask --> FreqControl[Pass to Frequency Control]
-    FreqControl --> FreqCheck{Frequency Check Passed?}
-
-    FreqCheck -->|Yes| SendNotif[Send Notification<br/>Slack/SMS/Webapp]
-    FreqCheck -->|No| LogSkip[Log Skip<br/>Reason: Rate Limited]
-
-    SendNotif --> UpdateNotifStatus[Update last_notified_at]
-    LogSkip --> EndFlow([End])
-
-    NoNotify --> LogNoNotif[Log Skip<br/>Reason: Aggregation Strategy]
-    LogNoNotif --> EndFlow
-
-    UpdateNotifStatus --> EndFlow
+    SaveAlert --> End([Flow Complete<br/>Output: Notification Mark])
 
     style Start fill:#e1f5ff
     style CreateNewAlert fill:#fff4e1
     style UpdateSession fill:#fff4e1
     style EscalateSeverity fill:#ffe1e1
-    style ForceNotify fill:#ffe1e1
-    style ShouldNotify fill:#e1ffe1
-    style NoNotify fill:#ffe1e1
-    style SendNotif fill:#e1ffe1
-    style EndFlow fill:#e8e8e8
+    style ForceNotify fill:#e1ffe1
+    style NeedNotify fill:#e1ffe1
+    style NoNotify fill:#fff4e1
+    style End fill:#e8e8e8
 ```
 
-#### 3.6.3 Severity Escalation Rules
+#### 3.6.3 Notification Sending and Frequency Control Flow
+
+```mermaid
+flowchart TD
+    Start([Receive Alert<br/>with Notification Mark]) --> CheckMark{Need to Send Notification?}
+
+    CheckMark -->|No| Skip[Skip Notification<br/>Log Event]
+    CheckMark -->|Yes| CheckReason{Notification Reason?}
+
+    CheckReason -->|Severity Escalated| ForceNotify[Force Notification Mode]
+    CheckReason -->|Regular Trigger| EvalStrategy[Evaluate Notification Strategy]
+
+    EvalStrategy --> StrategyType{Notification Strategy Type?}
+
+    StrategyType -->|First Trigger| CheckFirst{Is First Trigger?<br/>occurrence_count==1}
+    StrategyType -->|Threshold Based| CheckThreshold{Threshold Reached?}
+    StrategyType -->|Interval Based| CheckInterval{Interval Exceeded?}
+
+    CheckFirst -->|Yes| ShouldNotify[Pass Strategy Check]
+    CheckFirst -->|No| StrategySkip[Strategy Blocked<br/>No Notification]
+
+    CheckThreshold -->|Yes| ShouldNotify
+    CheckThreshold -->|No| StrategySkip
+
+    CheckInterval -->|Yes| ShouldNotify
+    CheckInterval -->|No| StrategySkip
+
+    ForceNotify --> CreateTask[Create Notification Task<br/>Priority: HIGH]
+    ShouldNotify --> CreateTask
+
+    CreateTask --> FreqControl[Frequency Control Check<br/>Redis Counter]
+    FreqControl --> FreqCheck{Pass Frequency Control?}
+
+    FreqCheck -->|Yes| SendNotif[Send Multi-Channel Notifications<br/>Slack/SMS/Webapp]
+    FreqCheck -->|No| FreqSkip[Frequency Blocked<br/>Log Retry-After]
+
+    SendNotif --> UpdateStatus[Update Notification Status<br/>last_notified_at]
+
+    Skip --> End([End])
+    StrategySkip --> LogStrategy[Log Strategy Block]
+    LogStrategy --> End
+    FreqSkip --> LogFreq[Log Frequency Block]
+    LogFreq --> End
+    UpdateStatus --> End
+
+    style Start fill:#e1f5ff
+    style ForceNotify fill:#ffe1e1
+    style ShouldNotify fill:#e1ffe1
+    style SendNotif fill:#e1ffe1
+    style StrategySkip fill:#fff4e1
+    style FreqSkip fill:#fff4e1
+    style End fill:#e8e8e8
+```
+
+#### 3.6.4 Severity Escalation Rules
 
 The system automatically escalates Alert severity based on the following rules:
 
@@ -492,7 +522,7 @@ The system automatically escalates Alert severity based on the following rules:
 }
 ```
 
-#### 3.6.4 Session Management
+#### 3.6.5 Session Management
 
 **Session Status Transitions**:
 ```

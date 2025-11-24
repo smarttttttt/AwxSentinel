@@ -386,12 +386,12 @@ Alert系统采用**混合聚合策略**，结合会话式聚合、滑动窗口�
   - 持续时间超过2小时 → 提升至P1
 - **优点**：自动识别严重攻击，提升响应优先级
 
-#### 3.6.2 聚合流程图
+#### 3.6.2 Alert聚合逻辑流程
 
 ```mermaid
 flowchart TD
-    Start([触发条件满足]) --> CalcFingerprint[计算Condition Fingerprint<br/>MD5哈希]
-    CalcFingerprint --> CheckSession{检查活跃会话<br/>session_status=ACTIVE<br/>last_active within timeout?}
+    Start([触发条件满足]) --> CalcFingerprint[计算Condition Fingerprint<br/>MD5哈希算法]
+    CalcFingerprint --> CheckSession{检查活跃会话<br/>session_status=ACTIVE?<br/>last_active within timeout?}
 
     CheckSession -->|是| UpdateSession[更新会话<br/>session_last_active=now]
     CheckSession -->|否| ExpireOldSession[过期旧会话<br/>session_status=EXPIRED]
@@ -405,61 +405,91 @@ flowchart TD
     CreateNewSession --> IncrementCount
     CreateNewAlert --> SetInitialValues[设置初始值<br/>occurrence_count=1<br/>original_severity]
 
-    SetInitialValues --> CreateComment
-    IncrementCount --> CreateComment[创建Alert Comment<br/>type=TRIGGER_EVENT]
+    SetInitialValues --> CreateComment[创建Alert Comment<br/>type=TRIGGER_EVENT<br/>保存metrics_snapshot]
+    IncrementCount --> CreateComment
 
     CreateComment --> CheckEscalation{需要提升严重程度?<br/>检查escalation规则}
 
     CheckEscalation -->|是| EscalateSeverity[提升current_severity<br/>记录escalation_history]
-    CheckEscalation -->|否| EvalNotification[评估通知策略]
+    CheckEscalation -->|否| DecideNotify{是否需要通知?}
 
     EscalateSeverity --> LogEscalation[记录提升事件]
-    LogEscalation --> ForceNotify[强制发送通知<br/>原因:严重程度提升]
+    LogEscalation --> ForceNotify[标记:需要通知<br/>原因:严重程度提升]
 
-    EvalNotification --> StrategyType{通知策略类型?}
+    DecideNotify -->|是| NeedNotify[标记:需要通知]
+    DecideNotify -->|否| NoNotify[标记:不通知<br/>原因:聚合中]
 
-    StrategyType -->|首次触发| CheckFirst{是首次触发?}
-    StrategyType -->|阈值触发| CheckThreshold{达到通知阈值?}
-    StrategyType -->|间隔触发| CheckInterval{超过时间间隔?}
+    ForceNotify --> SaveAlert[保存Alert到数据库]
+    NeedNotify --> SaveAlert
+    NoNotify --> SaveAlert
 
-    CheckFirst -->|是| ShouldNotify[应该发送通知]
-    CheckFirst -->|否| NoNotify[不发送通知]
-
-    CheckThreshold -->|是| ShouldNotify
-    CheckThreshold -->|否| NoNotify
-
-    CheckInterval -->|是| ShouldNotify
-    CheckInterval -->|否| NoNotify
-
-    ForceNotify --> CreateNotifTask[创建通知任务]
-    ShouldNotify --> CreateNotifTask
-
-    CreateNotifTask --> FreqControl[传递到频率控制]
-    FreqControl --> FreqCheck{通过频控?}
-
-    FreqCheck -->|是| SendNotif[发送通知<br/>Slack/SMS/Webapp]
-    FreqCheck -->|否| LogSkip[记录跳过<br/>原因:频率限制]
-
-    SendNotif --> UpdateNotifStatus[更新last_notified_at]
-    LogSkip --> EndFlow([结束])
-
-    NoNotify --> LogNoNotif[记录跳过<br/>原因:聚合策略]
-    LogNoNotif --> EndFlow
-
-    UpdateNotifStatus --> EndFlow
+    SaveAlert --> End([流程结束<br/>输出:通知标记])
 
     style Start fill:#e1f5ff
     style CreateNewAlert fill:#fff4e1
     style UpdateSession fill:#fff4e1
     style EscalateSeverity fill:#ffe1e1
-    style ForceNotify fill:#ffe1e1
-    style ShouldNotify fill:#e1ffe1
-    style NoNotify fill:#ffe1e1
-    style SendNotif fill:#e1ffe1
-    style EndFlow fill:#e8e8e8
+    style ForceNotify fill:#e1ffe1
+    style NeedNotify fill:#e1ffe1
+    style NoNotify fill:#fff4e1
+    style End fill:#e8e8e8
 ```
 
-#### 3.6.3 严重程度递进规则
+#### 3.6.3 通知发送与频控流程
+
+```mermaid
+flowchart TD
+    Start([接收Alert<br/>带通知标记]) --> CheckMark{需要发送通知?}
+
+    CheckMark -->|否| Skip[跳过通知<br/>记录日志]
+    CheckMark -->|是| CheckReason{通知原因?}
+
+    CheckReason -->|严重程度提升| ForceNotify[强制通知模式]
+    CheckReason -->|常规触发| EvalStrategy[评估通知策略]
+
+    EvalStrategy --> StrategyType{通知策略类型?}
+
+    StrategyType -->|首次触发| CheckFirst{是首次触发?<br/>occurrence_count==1}
+    StrategyType -->|阈值触发| CheckThreshold{达到通知阈值?}
+    StrategyType -->|间隔触发| CheckInterval{超过时间间隔?}
+
+    CheckFirst -->|是| ShouldNotify[通过策略检查]
+    CheckFirst -->|否| StrategySkip[策略拦截<br/>不发送通知]
+
+    CheckThreshold -->|是| ShouldNotify
+    CheckThreshold -->|否| StrategySkip
+
+    CheckInterval -->|是| ShouldNotify
+    CheckInterval -->|否| StrategySkip
+
+    ForceNotify --> CreateTask[创建通知任务<br/>优先级:HIGH]
+    ShouldNotify --> CreateTask
+
+    CreateTask --> FreqControl[频率控制检查<br/>Redis计数器]
+    FreqControl --> FreqCheck{通过频控?}
+
+    FreqCheck -->|是| SendNotif[发送多渠道通知<br/>Slack/SMS/Webapp]
+    FreqCheck -->|否| FreqSkip[频控拦截<br/>记录Retry-After]
+
+    SendNotif --> UpdateStatus[更新通知状态<br/>last_notified_at]
+
+    Skip --> End([结束])
+    StrategySkip --> LogStrategy[记录策略拦截]
+    LogStrategy --> End
+    FreqSkip --> LogFreq[记录频控拦截]
+    LogFreq --> End
+    UpdateStatus --> End
+
+    style Start fill:#e1f5ff
+    style ForceNotify fill:#ffe1e1
+    style ShouldNotify fill:#e1ffe1
+    style SendNotif fill:#e1ffe1
+    style StrategySkip fill:#fff4e1
+    style FreqSkip fill:#fff4e1
+    style End fill:#e8e8e8
+```
+
+#### 3.6.4 严重程度递进规则
 
 系统会根据以下规则自动提升Alert的严重程度：
 
@@ -492,7 +522,7 @@ flowchart TD
 }
 ```
 
-#### 3.6.4 会话管理
+#### 3.6.5 会话管理
 
 **会话状态流转**：
 ```
