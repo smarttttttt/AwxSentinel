@@ -362,6 +362,153 @@ flowchart TD
     style RecordNotMet fill:#f8d7da
 ```
 
+### 3.6 Alert Aggregation Flow
+
+The Alert system adopts a **hybrid aggregation strategy**, combining session-based aggregation, sliding window, and severity escalation to handle fraud attack alerts more intelligently.
+
+#### 3.6.1 Aggregation Strategy Description
+
+**1. Session-based Aggregation**
+- **Core Concept**: Dynamically determine if triggers belong to the same attack based on activity
+- **Strategy**: If interval between triggers < session_timeout_minutes (default 15 minutes) → consider as same attack session
+- **Advantages**: Better aligns with real attack scenarios (attacks are usually bursty), automatically distinguishes multiple attack rounds
+
+**2. Sliding Window**
+- **Core Concept**: Search for Alerts with same fingerprint within a fixed duration (e.g., 24 hours)
+- **Purpose**: Serves as fallback mechanism to avoid creating too many Alerts
+- **Advantages**: Avoids fixed window boundary issues, provides smoother aggregation
+
+**3. Severity Escalation**
+- **Core Concept**: Automatically escalate severity as attack duration/frequency increases
+- **Strategy**:
+  - Trigger count reaches 10 → escalate to P2
+  - Trigger count reaches 50 → escalate to P1
+  - Duration exceeds 2 hours → escalate to P1
+- **Advantages**: Automatically identify severe attacks, increase response priority
+
+#### 3.6.2 Aggregation Flow Diagram
+
+```mermaid
+flowchart TD
+    Start([Trigger Condition Met]) --> CalcFingerprint[Calculate Condition Fingerprint<br/>MD5 Hash]
+    CalcFingerprint --> CheckSession{Check Active Session<br/>session_status=ACTIVE<br/>last_active within timeout?}
+
+    CheckSession -->|Yes| UpdateSession[Update Session<br/>session_last_active=now]
+    CheckSession -->|No| ExpireOldSession[Expire Old Session<br/>session_status=EXPIRED]
+
+    ExpireOldSession --> CheckWindow{Check Sliding Window<br/>Same fingerprint within 24h?}
+
+    CheckWindow -->|Yes| CreateNewSession[Create New Session<br/>Link to existing Alert]
+    CheckWindow -->|No| CreateNewAlert[Create New Alert<br/>Initialize all fields]
+
+    UpdateSession --> IncrementCount[Increment occurrence_count<br/>Update last_triggered_at]
+    CreateNewSession --> IncrementCount
+    CreateNewAlert --> SetInitialValues[Set Initial Values<br/>occurrence_count=1<br/>original_severity]
+
+    SetInitialValues --> CreateComment
+    IncrementCount --> CreateComment[Create Alert Comment<br/>type=TRIGGER_EVENT]
+
+    CreateComment --> CheckEscalation{Need Severity Escalation?<br/>Check escalation rules}
+
+    CheckEscalation -->|Yes| EscalateSeverity[Escalate current_severity<br/>Record escalation_history]
+    CheckEscalation -->|No| EvalNotification[Evaluate Notification Strategy]
+
+    EscalateSeverity --> LogEscalation[Log Escalation Event]
+    LogEscalation --> ForceNotify[Force Send Notification<br/>Reason: Severity Escalated]
+
+    EvalNotification --> StrategyType{Notification Strategy Type?}
+
+    StrategyType -->|First Trigger| CheckFirst{Is First Trigger?}
+    StrategyType -->|Threshold Based| CheckThreshold{Threshold Reached?}
+    StrategyType -->|Interval Based| CheckInterval{Interval Exceeded?}
+
+    CheckFirst -->|Yes| ShouldNotify[Should Send Notification]
+    CheckFirst -->|No| NoNotify[No Notification]
+
+    CheckThreshold -->|Yes| ShouldNotify
+    CheckThreshold -->|No| NoNotify
+
+    CheckInterval -->|Yes| ShouldNotify
+    CheckInterval -->|No| NoNotify
+
+    ForceNotify --> CreateNotifTask[Create Notification Task]
+    ShouldNotify --> CreateNotifTask
+
+    CreateNotifTask --> FreqControl[Pass to Frequency Control]
+    FreqControl --> FreqCheck{Frequency Check Passed?}
+
+    FreqCheck -->|Yes| SendNotif[Send Notification<br/>Slack/SMS/Webapp]
+    FreqCheck -->|No| LogSkip[Log Skip<br/>Reason: Rate Limited]
+
+    SendNotif --> UpdateNotifStatus[Update last_notified_at]
+    LogSkip --> EndFlow([End])
+
+    NoNotify --> LogNoNotif[Log Skip<br/>Reason: Aggregation Strategy]
+    LogNoNotif --> EndFlow
+
+    UpdateNotifStatus --> EndFlow
+
+    style Start fill:#e1f5ff
+    style CreateNewAlert fill:#fff4e1
+    style UpdateSession fill:#fff4e1
+    style EscalateSeverity fill:#ffe1e1
+    style ForceNotify fill:#ffe1e1
+    style ShouldNotify fill:#e1ffe1
+    style NoNotify fill:#ffe1e1
+    style SendNotif fill:#e1ffe1
+    style EndFlow fill:#e8e8e8
+```
+
+#### 3.6.3 Severity Escalation Rules
+
+The system automatically escalates Alert severity based on the following rules:
+
+| Trigger Condition | Escalate To | Description |
+|------------------|-------------|-------------|
+| occurrence_count >= 10 | P2 | Medium intensity attack |
+| occurrence_count >= 50 | P1 | High intensity attack |
+| Duration >= 2 hours | P1 | Sustained attack |
+| Duration >= 6 hours | P0 | Severe sustained attack |
+
+**Escalation History Example**:
+```json
+{
+  "escalations": [
+    {
+      "from_severity": "P3",
+      "to_severity": "P2",
+      "reason": "occurrence_count_threshold",
+      "occurrence_count": 10,
+      "escalated_at": "2025-11-19T10:45:00Z"
+    },
+    {
+      "from_severity": "P2",
+      "to_severity": "P1",
+      "reason": "occurrence_count_threshold",
+      "occurrence_count": 50,
+      "escalated_at": "2025-11-19T11:30:00Z"
+    }
+  ]
+}
+```
+
+#### 3.6.4 Session Management
+
+**Session Status Transitions**:
+```
+ACTIVE → EXPIRED → (may reactivate to ACTIVE)
+ACTIVE → RESOLVED (manually resolved by user)
+```
+
+**Session Timeout Configuration**:
+- Default timeout: 15 minutes
+- Configurable per Alert type
+- Example: Card testing attacks suggest 15 minutes, velocity attacks suggest 30 minutes
+
+**Session Reactivation**:
+- If an EXPIRED session is triggered again within the sliding window, a new session can be created linked to the same Alert
+- This tracks intermittent attack patterns
+
 ---
 
 ## 4. Data Model
@@ -395,15 +542,27 @@ erDiagram
         uuid id PK
         uuid merchant_id FK
         string alert_type
-        string severity
+        string original_severity
+        string current_severity
         string title
         text summary
         json suggested_action
-        json raw_metrics
         uuid template_id FK
         string status
-        timestamp triggered_at
+        string condition_fingerprint
+        int occurrence_count
+        timestamp session_started_at
+        timestamp session_last_active
+        int session_timeout_minutes
+        string session_status
+        int aggregation_window_hours
+        timestamp first_triggered_at
+        timestamp last_triggered_at
+        json escalation_history
+        timestamp last_escalated_at
         timestamp resolved_at
+        varchar namespace
+        varchar checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -491,14 +650,34 @@ erDiagram
 ### 4.2 Core Entity Descriptions
 
 #### 4.2.1 Alert
-Stores core alert information, including AI-generated summary content.
+Stores core alert information, including AI-generated summary content and aggregation management fields.
 
 **Key Fields**:
 - `alert_type`: Alert type (CARD_TESTING, VELOCITY_ATTACK, etc.)
-- `severity`: Severity level (P1, P2, P3)
+- `original_severity`: Initial severity level (P0, P1, P2, P3)
+- `current_severity`: Current severity level (may be auto-escalated)
 - `summary`: AI-generated alert summary
-- `raw_metrics`: Original metric data (JSON format)
+- `suggested_action`: AI-recommended actions (JSON format)
 - `status`: Alert status (ACTIVE, RESOLVED, DISMISSED)
+
+**Aggregation Fields**:
+- `condition_fingerprint`: Condition fingerprint (MD5 hash), used to identify Alerts with same trigger conditions
+- `occurrence_count`: Trigger count counter
+- `session_started_at`: Session start time
+- `session_last_active`: Session last active time
+- `session_timeout_minutes`: Session timeout duration (minutes)
+- `session_status`: Session status (ACTIVE, EXPIRED, RESOLVED)
+- `aggregation_window_hours`: Aggregation window duration (hours)
+- `first_triggered_at`: First trigger time
+- `last_triggered_at`: Last trigger time
+
+**Severity Escalation Fields**:
+- `escalation_history`: Severity escalation history (JSON format)
+- `last_escalated_at`: Last escalation time
+
+**Common Fields**:
+- `namespace`: Namespace for multi-tenant isolation
+- `checkpoint`: Checkpoint marker for data sync and recovery
 
 #### 4.2.2 Alert Metric
 Records specific metric data that triggered the alert, supports multiple metrics.

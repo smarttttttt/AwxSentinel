@@ -362,6 +362,153 @@ flowchart TD
     style RecordNotMet fill:#f8d7da
 ```
 
+### 3.6 Alert聚合流程
+
+Alert系统采用**混合聚合策略**，结合会话式聚合、滑动窗口和严重程度递进，以更智能地处理欺诈攻击告警。
+
+#### 3.6.1 聚合策略说明
+
+**1. 会话式聚合（Session-based Aggregation）**
+- **核心思想**：基于攻击活跃度动态判断是否属于同一次攻击
+- **策略**：如果两次触发间隔 < session_timeout_minutes（默认15分钟）→ 认为是同一次攻击会话
+- **优点**：更符合真实攻击场景（攻击通常是突发式的），自动区分多轮攻击
+
+**2. 滑动窗口（Sliding Window）**
+- **核心思想**：在固定时长内（如24小时）查找相同fingerprint的Alert
+- **作用**：作为兜底机制，避免创建过多Alert
+- **优点**：避免固定窗口的边界问题，提供更平滑的聚合效果
+
+**3. 严重程度递进（Severity Escalation）**
+- **核心思想**：同一攻击持续时间越长/次数越多，自动提升严重程度
+- **策略**：
+  - 触发次数达到10次 → 提升至P2
+  - 触发次数达到50次 → 提升至P1
+  - 持续时间超过2小时 → 提升至P1
+- **优点**：自动识别严重攻击，提升响应优先级
+
+#### 3.6.2 聚合流程图
+
+```mermaid
+flowchart TD
+    Start([触发条件满足]) --> CalcFingerprint[计算Condition Fingerprint<br/>MD5哈希]
+    CalcFingerprint --> CheckSession{检查活跃会话<br/>session_status=ACTIVE<br/>last_active within timeout?}
+
+    CheckSession -->|是| UpdateSession[更新会话<br/>session_last_active=now]
+    CheckSession -->|否| ExpireOldSession[过期旧会话<br/>session_status=EXPIRED]
+
+    ExpireOldSession --> CheckWindow{检查滑动窗口<br/>24h内有相同fingerprint?}
+
+    CheckWindow -->|是| CreateNewSession[创建新会话<br/>关联到现有Alert]
+    CheckWindow -->|否| CreateNewAlert[创建新Alert<br/>初始化所有字段]
+
+    UpdateSession --> IncrementCount[递增occurrence_count<br/>更新last_triggered_at]
+    CreateNewSession --> IncrementCount
+    CreateNewAlert --> SetInitialValues[设置初始值<br/>occurrence_count=1<br/>original_severity]
+
+    SetInitialValues --> CreateComment
+    IncrementCount --> CreateComment[创建Alert Comment<br/>type=TRIGGER_EVENT]
+
+    CreateComment --> CheckEscalation{需要提升严重程度?<br/>检查escalation规则}
+
+    CheckEscalation -->|是| EscalateSeverity[提升current_severity<br/>记录escalation_history]
+    CheckEscalation -->|否| EvalNotification[评估通知策略]
+
+    EscalateSeverity --> LogEscalation[记录提升事件]
+    LogEscalation --> ForceNotify[强制发送通知<br/>原因:严重程度提升]
+
+    EvalNotification --> StrategyType{通知策略类型?}
+
+    StrategyType -->|首次触发| CheckFirst{是首次触发?}
+    StrategyType -->|阈值触发| CheckThreshold{达到通知阈值?}
+    StrategyType -->|间隔触发| CheckInterval{超过时间间隔?}
+
+    CheckFirst -->|是| ShouldNotify[应该发送通知]
+    CheckFirst -->|否| NoNotify[不发送通知]
+
+    CheckThreshold -->|是| ShouldNotify
+    CheckThreshold -->|否| NoNotify
+
+    CheckInterval -->|是| ShouldNotify
+    CheckInterval -->|否| NoNotify
+
+    ForceNotify --> CreateNotifTask[创建通知任务]
+    ShouldNotify --> CreateNotifTask
+
+    CreateNotifTask --> FreqControl[传递到频率控制]
+    FreqControl --> FreqCheck{通过频控?}
+
+    FreqCheck -->|是| SendNotif[发送通知<br/>Slack/SMS/Webapp]
+    FreqCheck -->|否| LogSkip[记录跳过<br/>原因:频率限制]
+
+    SendNotif --> UpdateNotifStatus[更新last_notified_at]
+    LogSkip --> EndFlow([结束])
+
+    NoNotify --> LogNoNotif[记录跳过<br/>原因:聚合策略]
+    LogNoNotif --> EndFlow
+
+    UpdateNotifStatus --> EndFlow
+
+    style Start fill:#e1f5ff
+    style CreateNewAlert fill:#fff4e1
+    style UpdateSession fill:#fff4e1
+    style EscalateSeverity fill:#ffe1e1
+    style ForceNotify fill:#ffe1e1
+    style ShouldNotify fill:#e1ffe1
+    style NoNotify fill:#ffe1e1
+    style SendNotif fill:#e1ffe1
+    style EndFlow fill:#e8e8e8
+```
+
+#### 3.6.3 严重程度递进规则
+
+系统会根据以下规则自动提升Alert的严重程度：
+
+| 触发条件 | 提升至 | 说明 |
+|---------|-------|------|
+| occurrence_count >= 10 | P2 | 中等强度攻击 |
+| occurrence_count >= 50 | P1 | 高强度攻击 |
+| 持续时长 >= 2小时 | P1 | 持续性攻击 |
+| 持续时长 >= 6小时 | P0 | 严重持续攻击 |
+
+**Escalation History示例**：
+```json
+{
+  "escalations": [
+    {
+      "from_severity": "P3",
+      "to_severity": "P2",
+      "reason": "occurrence_count_threshold",
+      "occurrence_count": 10,
+      "escalated_at": "2025-11-19T10:45:00Z"
+    },
+    {
+      "from_severity": "P2",
+      "to_severity": "P1",
+      "reason": "occurrence_count_threshold",
+      "occurrence_count": 50,
+      "escalated_at": "2025-11-19T11:30:00Z"
+    }
+  ]
+}
+```
+
+#### 3.6.4 会话管理
+
+**会话状态流转**：
+```
+ACTIVE → EXPIRED → (可能重新激活为ACTIVE)
+ACTIVE → RESOLVED (用户手动解决)
+```
+
+**会话超时配置**：
+- 默认超时时间：15分钟
+- 可按Alert类型配置不同的超时时间
+- 例如：卡测试攻击建议15分钟，速率攻击建议30分钟
+
+**会话重新激活**：
+- 如果EXPIRED的会话在滑动窗口内再次被触发，可以创建新会话关联到同一Alert
+- 这样可以追踪间歇性攻击模式
+
 ---
 
 ## 4. 数据模型
@@ -395,15 +542,27 @@ erDiagram
         uuid id PK
         uuid merchant_id FK
         string alert_type
-        string severity
+        string original_severity
+        string current_severity
         string title
         text summary
         json suggested_action
-        json raw_metrics
         uuid template_id FK
         string status
-        timestamp triggered_at
+        string condition_fingerprint
+        int occurrence_count
+        timestamp session_started_at
+        timestamp session_last_active
+        int session_timeout_minutes
+        string session_status
+        int aggregation_window_hours
+        timestamp first_triggered_at
+        timestamp last_triggered_at
+        json escalation_history
+        timestamp last_escalated_at
         timestamp resolved_at
+        varchar namespace
+        varchar checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -491,14 +650,34 @@ erDiagram
 ### 4.2 核心实体说明
 
 #### 4.2.1 Alert (警报)
-存储警报的核心信息，包括AI生成的摘要内容。
+存储警报的核心信息，包括AI生成的摘要内容和聚合管理字段。
 
 **关键字段**：
 - `alert_type`: 警报类型（CARD_TESTING, VELOCITY_ATTACK等）
-- `severity`: 严重程度（P1, P2, P3）
+- `original_severity`: 初始严重程度（P0, P1, P2, P3）
+- `current_severity`: 当前严重程度（可能被自动提升）
 - `summary`: AI生成的警报摘要
-- `raw_metrics`: 原始指标数据（JSON格式）
+- `suggested_action`: AI建议的操作（JSON格式）
 - `status`: 警报状态（ACTIVE, RESOLVED, DISMISSED）
+
+**聚合相关字段**：
+- `condition_fingerprint`: 条件指纹（MD5哈希），用于识别相同触发条件的Alert
+- `occurrence_count`: 触发次数计数器
+- `session_started_at`: 会话开始时间
+- `session_last_active`: 会话最后活跃时间
+- `session_timeout_minutes`: 会话超时时长（分钟）
+- `session_status`: 会话状态（ACTIVE, EXPIRED, RESOLVED）
+- `aggregation_window_hours`: 聚合窗口时长（小时）
+- `first_triggered_at`: 首次触发时间
+- `last_triggered_at`: 最后触发时间
+
+**严重程度递进字段**：
+- `escalation_history`: 严重程度提升历史记录（JSON格式）
+- `last_escalated_at`: 最后一次提升时间
+
+**通用字段**：
+- `namespace`: 命名空间，用于多租户隔离
+- `checkpoint`: 检查点标记，用于数据同步和恢复
 
 #### 4.2.2 Alert Metric (警报指标)
 记录触发警报的具体指标数据，支持多个指标。
