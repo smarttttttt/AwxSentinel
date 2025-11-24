@@ -577,6 +577,7 @@ erDiagram
         json escalation_history
         timestamp last_escalated_at
         timestamp resolved_at
+        json metrics_data
         json metadata
         json namespace
         json checkpoint
@@ -589,6 +590,7 @@ erDiagram
         uuid alert_id FK
         string comment_type
         text content
+        json metrics_snapshot
         json metadata
         string created_by
         json namespace
@@ -680,8 +682,9 @@ Stores core alert information, including AI-generated summary content and aggreg
 - `escalation_history`: Severity escalation history (JSON format)
 - `last_escalated_at`: Last escalation time
 
-**Metadata Field**:
-- `metadata`: Complete metadata of first or latest trigger (JSON format), including raw metrics, source system, etc.
+**Metrics and Metadata Fields**:
+- `metrics_data`: Alert metrics data (JSON format), stores complete metrics from first trigger, such as block_rate, failed_auth_rate, total_transactions, etc.
+- `metadata`: Other metadata (JSON format, nullable), stores non-metric information like source system, region, detected_at, etc.
 
 **Common Fields**:
 - `namespace`: Namespace (JSON format) for multi-tenant isolation
@@ -693,14 +696,15 @@ Records each trigger event, user comments, and system logs for an Alert.
 **Key Fields**:
 - `comment_type`: Comment type (TRIGGER_EVENT: trigger event, SEVERITY_ESCALATION: severity escalation, USER_NOTE: user note, SYSTEM_LOG: system log)
 - `content`: Comment content or event description
-- `metadata`: Metadata snapshot of this trigger (JSON format), including metrics at trigger time, severity changes, etc.
+- `metrics_snapshot`: Metrics snapshot (JSON format, nullable), populated only for TRIGGER_EVENT and SEVERITY_ESCALATION, records metrics data of this trigger
+- `metadata`: Comment metadata (JSON format, nullable), stores additional comment-related information, such as user info, system operation details, etc.
 - `created_by`: Creator (system or user ID)
 
 **Use Cases**:
-- Record trigger events during session updates
-- Record details during severity escalation
-- User manually adds notes
-- System automatically logs critical operations
+- **TRIGGER_EVENT**: Record trigger events during session updates, populate `metrics_snapshot`
+- **SEVERITY_ESCALATION**: Record escalation details, populate `metrics_snapshot`
+- **USER_NOTE**: User manually adds notes, `metrics_snapshot` is null, optionally populate `metadata` with user info
+- **SYSTEM_LOG**: System automatically logs critical operations, optionally populate `metadata` with operation details
 
 #### 4.2.3 Alert Template
 Defines Prompt templates for different types of alerts, used to generate AI summaries.

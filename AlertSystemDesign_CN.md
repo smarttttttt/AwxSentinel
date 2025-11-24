@@ -577,6 +577,7 @@ erDiagram
         json escalation_history
         timestamp last_escalated_at
         timestamp resolved_at
+        json metrics_data
         json metadata
         json namespace
         json checkpoint
@@ -589,6 +590,7 @@ erDiagram
         uuid alert_id FK
         string comment_type
         text content
+        json metrics_snapshot
         json metadata
         string created_by
         json namespace
@@ -680,8 +682,9 @@ erDiagram
 - `escalation_history`: 严重程度提升历史记录（JSON格式）
 - `last_escalated_at`: 最后一次提升时间
 
-**元数据字段**：
-- `metadata`: 首次或最新触发的完整元数据（JSON格式），包含原始metrics、来源系统等信息
+**指标与元数据字段**：
+- `metrics_data`: 告警指标数据（JSON格式），存储首次触发的完整指标，如 block_rate、failed_auth_rate、total_transactions 等
+- `metadata`: 其他元数据（JSON格式，nullable），存储来源系统、region、detected_at 等非指标信息
 
 **通用字段**：
 - `namespace`: 命名空间（JSON格式），用于多租户隔离
@@ -693,14 +696,15 @@ erDiagram
 **关键字段**：
 - `comment_type`: 评论类型（TRIGGER_EVENT: 触发事件, SEVERITY_ESCALATION: 严重程度提升, USER_NOTE: 用户备注, SYSTEM_LOG: 系统日志）
 - `content`: 评论内容或事件描述
-- `metadata`: 本次触发的元数据快照（JSON格式），包含触发时的metrics、严重程度变化等信息
+- `metrics_snapshot`: 指标快照（JSON格式，nullable），仅在 TRIGGER_EVENT 和 SEVERITY_ESCALATION 时填充，记录本次触发的指标数据
+- `metadata`: 评论元数据（JSON格式，nullable），用于存储评论相关的额外信息，如用户信息、系统操作详情等
 - `created_by`: 创建者（system 或 用户ID）
 
 **使用场景**：
-- 会话更新时记录触发事件
-- 严重程度提升时记录变化详情
-- 用户手动添加备注
-- 系统自动记录关键操作
+- **TRIGGER_EVENT**：会话更新时记录触发事件，填充 `metrics_snapshot`
+- **SEVERITY_ESCALATION**：严重程度提升时记录变化详情，填充 `metrics_snapshot`
+- **USER_NOTE**：用户手动添加备注，`metrics_snapshot` 为空，可选填充 `metadata` 记录用户信息
+- **SYSTEM_LOG**：系统自动记录关键操作，可选填充 `metadata` 记录操作详情
 
 #### 4.2.3 Alert Template (警报模板)
 定义不同类型警报的Prompt模板，用于生成AI摘要。
