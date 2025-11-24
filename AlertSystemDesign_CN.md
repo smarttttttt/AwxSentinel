@@ -398,7 +398,7 @@ erDiagram
         string severity
         string title
         text summary
-        text suggested_action
+        json suggested_action
         json raw_metrics
         uuid template_id FK
         string status
