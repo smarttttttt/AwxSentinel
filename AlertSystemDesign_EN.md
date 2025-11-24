@@ -122,16 +122,17 @@ sequenceDiagram
     participant MP as Metric Platform
     participant API as Alert API
     participant TCE as Trigger Condition<br/>Engine
-    participant FCS as Frequency Control<br/>Service
+    participant AGG as Aggregate<br/>Service
     participant AS as Alert Service
     participant AGS as AI Agent Service
     participant LLM as LLM Service
     participant DB as Database
     participant MQ as Message Queue
     participant NS as Notification Service
+    participant FCS as Frequency Control<br/>Service
     participant CH as Channels<br/>(Slack/SMS/Web)
 
-    MP->>API: POST /api/v1/alerts/metrics<br/>{merchantId, metrics, metadata}
+    MP->>API: POST /api/v1/alerts/metrics<br/>{accountId, metrics, metadata}
     API->>API: Validate Request
     API->>TCE: Evaluate Trigger Conditions
 
@@ -139,29 +140,41 @@ sequenceDiagram
         TCE->>API: Return: No Trigger
         API->>MP: 200 OK (no alert)
     else Conditions Met
-        TCE->>FCS: Check Frequency Limit
+        TCE->>AGG: Process Aggregation<br/>{accountId, alertType, metrics}
+
+        AGG->>AGG: Calculate Condition Fingerprint
+        AGG->>AGG: Check Session & Sliding Window
+        AGG->>AGG: Determine: Create/Update Alert
+
+        AGG->>AS: Create or Update Alert Request<br/>{aggregation decision}
+
+        AS->>AGS: Request AI Summary<br/>{metrics, promptTemplate}
+        AGS->>AGS: Load Prompt Template
+        AGS->>LLM: Call LLM API<br/>{prompt, metrics}
+        LLM->>AGS: Return AI Summary
+        AGS->>AS: Return Alert Content
+
+        AS->>DB: Save/Update Alert Record
+        DB->>AS: Return alertId
+
+        AS->>AS: Check Escalation Rules
+        AS->>AS: Determine Notification Need
+
+        AS->>MQ: Publish Notification Task<br/>{alertId, channels, reason}
+        AS->>API: Return alertId
+        API->>MP: 201 Created<br/>{alertId}
+
+        MQ->>NS: Consume Notification Task
+
+        NS->>NS: Evaluate Notification Strategy
+        NS->>FCS: Check Frequency Limit
 
         alt Frequency Limit Exceeded
-            FCS->>API: Return: Rate Limited
-            API->>MP: 429 Too Many Requests
+            FCS->>NS: Return: Rate Limited
+            NS->>DB: Log Frequency Block
         else Frequency Check Passed
             FCS->>FCS: Update Frequency Counter
-            FCS->>AS: Create Alert Request
-
-            AS->>AGS: Request AI Summary<br/>{metrics, promptTemplate}
-            AGS->>AGS: Load Prompt Template
-            AGS->>LLM: Call LLM API<br/>{prompt, metrics}
-            LLM->>AGS: Return AI Summary
-            AGS->>AS: Return Alert Content
-
-            AS->>DB: Save Alert Record
-            DB->>AS: Return alertId
-
-            AS->>MQ: Publish Notification Task<br/>{alertId, channels}
-            AS->>API: Return alertId
-            API->>MP: 201 Created<br/>{alertId}
-
-            MQ->>NS: Consume Notification Task
+            FCS->>NS: Return: Allowed
 
             par Parallel Multi-Channel Notifications
                 NS->>CH: Send Slack Notification

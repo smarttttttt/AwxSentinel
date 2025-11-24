@@ -122,16 +122,17 @@ sequenceDiagram
     participant MP as Metric Platform
     participant API as Alert API
     participant TCE as Trigger Condition<br/>Engine
-    participant FCS as Frequency Control<br/>Service
+    participant AGG as Aggregate<br/>Service
     participant AS as Alert Service
     participant AGS as AI Agent Service
     participant LLM as LLM Service
     participant DB as Database
     participant MQ as Message Queue
     participant NS as Notification Service
+    participant FCS as Frequency Control<br/>Service
     participant CH as Channels<br/>(Slack/SMS/Web)
 
-    MP->>API: POST /api/v1/alerts/metrics<br/>{merchantId, metrics, metadata}
+    MP->>API: POST /api/v1/alerts/metrics<br/>{accountId, metrics, metadata}
     API->>API: 验证请求
     API->>TCE: 评估触发条件
 
@@ -139,29 +140,41 @@ sequenceDiagram
         TCE->>API: 返回：不触发
         API->>MP: 200 OK (no alert)
     else 满足触发条件
-        TCE->>FCS: 检查频率限制
+        TCE->>AGG: 处理聚合逻辑<br/>{accountId, alertType, metrics}
+
+        AGG->>AGG: 计算条件指纹
+        AGG->>AGG: 检查会话和滑动窗口
+        AGG->>AGG: 决定：创建/更新Alert
+
+        AGG->>AS: 创建或更新Alert请求<br/>{聚合决策}
+
+        AS->>AGS: 请求生成AI摘要<br/>{metrics, promptTemplate}
+        AGS->>AGS: 加载Prompt模板
+        AGS->>LLM: 调用LLM API<br/>{prompt, metrics}
+        LLM->>AGS: 返回AI生成摘要
+        AGS->>AS: 返回警报内容
+
+        AS->>DB: 保存/更新警报记录
+        DB->>AS: 返回alertId
+
+        AS->>AS: 检查严重程度提升规则
+        AS->>AS: 判断是否需要通知
+
+        AS->>MQ: 发布通知任务<br/>{alertId, channels, reason}
+        AS->>API: 返回alertId
+        API->>MP: 201 Created<br/>{alertId}
+
+        MQ->>NS: 消费通知任务
+
+        NS->>NS: 评估通知策略
+        NS->>FCS: 检查频率限制
 
         alt 超过频率限制
-            FCS->>API: 返回：频率限制
-            API->>MP: 429 Too Many Requests
+            FCS->>NS: 返回：频率限制
+            NS->>DB: 记录频控拦截
         else 通过频率检查
             FCS->>FCS: 更新频控计数器
-            FCS->>AS: 创建警报请求
-
-            AS->>AGS: 请求生成AI摘要<br/>{metrics, promptTemplate}
-            AGS->>AGS: 加载Prompt模板
-            AGS->>LLM: 调用LLM API<br/>{prompt, metrics}
-            LLM->>AGS: 返回AI生成摘要
-            AGS->>AS: 返回警报内容
-
-            AS->>DB: 保存警报记录
-            DB->>AS: 返回alertId
-
-            AS->>MQ: 发布通知任务<br/>{alertId, channels}
-            AS->>API: 返回alertId
-            API->>MP: 201 Created<br/>{alertId}
-
-            MQ->>NS: 消费通知任务
+            FCS->>NS: 返回：允许发送
 
             par 并行发送多渠道通知
                 NS->>CH: 发送Slack通知
