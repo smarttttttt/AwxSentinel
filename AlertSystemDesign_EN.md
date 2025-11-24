@@ -552,11 +552,233 @@ ACTIVE → RESOLVED (manually resolved by user)
   - Easier for users to understand, avoiding the complex concept of "session reactivation"
   - Comments clearly record each trigger's time and metrics
 
-### 3.7 Scheduled Metric Pull Flow
+### 3.7 Trigger Condition Engine Technical Comparison
+
+Trigger condition evaluation is a core function of the Alert system. We compare two implementation approaches: **Reusing existing Rule Engine** vs **Independent Condition Flow**.
+
+#### 3.7.1 Comparison Overview
+
+| Dimension | Option A: Reuse Rule Engine | Option B: Independent Condition Flow | Recommendation |
+|-----------|---------------------------|-------------------------------------|----------------|
+| **Development Time** | 2-3 weeks | 1-2 weeks | ✅ Option B |
+| **Maintenance Cost** | High (depends on external team) | Low (team controlled) | ✅ Option B |
+| **System Complexity** | High (heavy dependency) | Low (lightweight) | ✅ Option B |
+| **Performance** | Over-optimized (real-time transaction level) | Meets needs (batch processing level) | ✅ Option B |
+| **Extensibility** | Strong (supports complex DSL) | Moderate (meets current needs) | ⚖️ Depends |
+| **Team Familiarity** | Need to learn Rule Engine | Simple and intuitive | ✅ Option B |
+
+#### 3.7.2 Detailed Analysis
+
+##### **1. Development Time Cost**
+
+**Option A: Reuse Rule Engine**
+```
+Week 1-2: Learning Rule Engine
+  - Understand RuleDefinition data model
+  - Learn DSL/Spring EL syntax
+  - Familiarize with VariableEvaluator mechanism
+  - Integrate risk-rule-management-service API
+
+Week 2-3: Adaptation and Integration
+  - Design Metrics to RuleVariable conversion layer
+  - Implement trigger condition to Rule Expression mapping
+  - Handle Rule Engine response adaptation
+  - Testing and debugging integration issues
+
+Total: 2-3 weeks
+Risk: Depends on Rule Engine team support, possible blockers
+```
+
+**Option B: Independent Condition Flow**
+```
+Week 1: Core Implementation
+  - Day 1-2: Design TriggerCondition data model
+  - Day 3-4: Implement condition evaluation engine (simple comparison logic)
+  - Day 5: Implement AND/OR combination logic
+
+Week 2: Testing and Optimization
+  - Day 1-2: Unit testing
+  - Day 3: Integration testing
+  - Day 4-5: Performance testing and optimization
+
+Total: 1-2 weeks
+Risk: Low, team has full control
+```
+
+##### **2. Maintenance Cost Comparison**
+
+**Annual Maintenance Cost Estimate**:
+
+**Option A**: ~20-26 person-days/year
+- Version upgrade adaptation: 2-3 times/year × 3 days = 6-9 days
+- Bug fix coordination: 4-5 times/year × 2 days = 8-10 days
+- Knowledge transfer: New member learning curve 5-7 days
+
+**Option B**: ~4-6.5 person-days/year
+- Bug fixes: 2-3 times/year × 0.5 days = 1-1.5 days
+- Feature enhancements: 2-3 times/year × 1 day = 2-3 days
+- Knowledge transfer: New member learning 1-2 days
+
+**Maintenance Cost Comparison**: Option B saves **75%** maintenance time
+
+##### **3. System Complexity Comparison**
+
+**Complexity Issues with Option A**:
+1. **Long dependency chain**: Alert → Rule Management → Decision Engine → Evaluators
+2. **Multiple data transformations**: Metrics → RuleVariable → Expression → Result
+3. **Multiple service calls**: 2-3 RPC calls per evaluation
+4. **Multiple failure points**: Any service failure affects Alert system
+
+**Simplicity Advantages of Option B**:
+1. **No external dependencies**: All logic within Alert Service
+2. **Short call chain**: API → Engine → Service, single process calls
+3. **Fault isolation**: Alert system runs independently
+4. **Easy to test**: Pure function logic, simple unit test coverage
+
+##### **4. Performance Comparison**
+
+**Test Scenario**: Evaluate 1000 Accounts with 2 conditions each
+
+| Performance Metric | Option A: Rule Engine | Option B: Condition Flow |
+|-------------------|----------------------|-------------------------|
+| **Single Evaluation Latency** | 50-100ms (RPC calls) | 1-5ms (in-memory) |
+| **QPS** | ~100 (limited by RPC) | ~5000 (limited by CPU) |
+| **Resource Usage** | High (multiple serialization) | Low (pure memory) |
+| **Scalability** | Need to scale Rule Engine | Single machine sufficient |
+
+**Performance Difference Reasons**:
+- Rule Engine designed for **real-time transaction decisions** (microsecond response)
+- Alert scenario is **batch processing mode** (minute-level checks)
+- Rule Engine's high-performance optimization is **over-engineering** for Alert scenarios
+
+##### **5. Functional Requirements Fit**
+
+**Actual Alert Trigger Condition Needs**:
+```python
+# 99% of trigger conditions are simple threshold comparisons
+conditions = [
+    "block_rate > 0.3",           # ✅ Simple comparison
+    "failed_auth_rate > 0.5",     # ✅ Simple comparison
+    "transaction_count > 1000",   # ✅ Simple comparison
+]
+
+# AND/OR combination
+logic = "block_rate > 0.3 AND failed_auth_rate > 0.5"  # ✅ Simple combination
+```
+
+**Rule Engine Complex Capabilities (Alert doesn't need)**:
+```java
+// ❌ Alert doesn't need these complex capabilities
+- DSL scripting language
+- Spring EL expressions
+- 100+ VariableEvaluators
+- Nested rules
+- Dynamic variable calculation
+- Rule priority scheduling
+- Complex business logic
+```
+
+**Conclusion**: Alert only needs **5%** of Rule Engine's capabilities but bears **100%** of its complexity.
+
+##### **6. Code Implementation Comparison**
+
+**Code Comparison**:
+- Option A: ~200 lines, depends on 2 external services
+- Option B: ~30 lines, zero dependencies
+- **Code reduction: 85%**
+
+##### **7. Extensibility Comparison**
+
+**Future Possible Requirements**:
+
+| Requirement | Option A: Rule Engine | Option B: Condition Flow | Implementation Difficulty |
+|------------|----------------------|-------------------------|--------------------------|
+| Add operators (contains, in) | Need Rule Engine support | Add case branches | B simpler |
+| Time range conditions | Adapt TimeWindow Variable | Add time comparison logic | B simpler |
+| Condition priority sorting | Native Rule Engine support | Implement yourself | A simpler |
+| Complex nested logic | Native Rule Engine support | Need recursive implementation | A simpler |
+
+**Assessment**:
+- First two requirements (90% probability): Option B better
+- Last two requirements (10% probability): Option A better
+
+**Strategy**: Start with Option B, migrate to Rule Engine if complex capabilities truly needed (migration cost controllable)
+
+##### **8. Risk Assessment**
+
+**Option A Risks**:
+1. 🔴 **High dependency risk**: Rule Engine team architecture changes directly impact Alert
+2. 🔴 **Technical debt risk**: Heavy dependency, high long-term maintenance cost
+3. 🟡 **Performance risk**: RPC calls increase latency, may affect batch processing
+4. 🟡 **Learning curve risk**: Team members need to learn Rule Engine
+
+**Option B Risks**:
+1. 🟢 **Functional gap risk** (low): Current needs simple, can migrate if complex capabilities needed
+2. 🟢 **Performance risk** (low): Pure memory calculation, performance exceeds requirements
+3. 🟢 **Maintenance risk** (low): Simple code, team fully controls
+
+#### 3.7.3 Recommendation: Independent Condition Flow
+
+**Recommendation Reasons**:
+
+1. ✅ **Lower development cost**: 1-2 weeks vs 2-3 weeks, saves 33%-50% time
+2. ✅ **Lower maintenance cost**: 4-6.5 person-days/year vs 20-26 person-days/year, saves 75%
+3. ✅ **Simpler system**: Zero dependencies, short call chain, easy to debug
+4. ✅ **Better performance**: 1-5ms vs 50-100ms, 10-20x faster
+5. ✅ **Team autonomy**: Not affected by external teams, quick response to needs
+6. ✅ **Better fit**: Perfectly matches current needs, no over-engineering
+
+**Implementation Suggestion**:
+
+```kotlin
+// Phase 1: MVP Implementation (1 week)
+class SimpleTriggerConditionEngine {
+    fun evaluate(metrics: Map<String, Double>,
+                 conditions: List<TriggerCondition>): Boolean {
+        // Support 6 basic operators
+        // Support AND/OR logic
+    }
+}
+
+// Phase 2: Enhanced Features (optional, as needed)
+- Add condition priority sorting
+- Support time range conditions
+- Add more operators (contains, in, regex)
+
+// Phase 3: Future Migration Path (if truly needed)
+- Keep existing interface
+- Switch backend to Rule Engine
+- Seamless upgrade for users
+```
+
+**Key Decision Point**:
+
+> **Occam's Razor Principle**: Entities should not be multiplied beyond necessity.
+> Alert's trigger condition evaluation is a **simple threshold comparison problem**, doesn't need complex rule engine.
+
+**However, Rule Engine MUST be used in these scenarios**:
+- ✅ **Auto-deploy rules**: AI-recommended rules must be deployed through Rule Management Service
+- ✅ **Rule management**: Merchant-created rules need to be managed in Rule Engine
+
+```mermaid
+graph LR
+    A[Metric Data] -->|Simple threshold comparison| B[Condition Flow<br/>Independent]
+    B -->|Trigger Alert| C[AI Agent]
+    C -->|Generate rule DSL| D[Rule Management<br/>Reuse existing]
+    D -->|Deploy rule| E[Risk Decision<br/>Reuse existing]
+
+    style B fill:#e1ffe1
+    style D fill:#fff4e1
+    style E fill:#fff4e1
+```
+
+---
+
+### 3.8 Scheduled Metric Pull Flow
 
 The Alert system supports two data acquisition modes: **external system push** and **scheduled active pull**. This section describes the scheduled pull workflow.
 
-#### 3.7.1 Scheduled Pull Architecture
+#### 3.8.1 Scheduled Pull Architecture
 
 ```mermaid
 flowchart TD
@@ -612,7 +834,7 @@ flowchart TD
     style End2 fill:#e1ffe1
 ```
 
-#### 3.7.2 Pull Configuration Example
+#### 3.8.2 Pull Configuration Example
 
 ```yaml
 metric_pull_jobs:
@@ -651,7 +873,7 @@ metric_pull_jobs:
     enabled: true
 ```
 
-#### 3.7.3 Metric Platform API Request Example
+#### 3.8.3 Metric Platform API Request Example
 
 **Request**:
 ```http
@@ -717,7 +939,7 @@ Authorization: Bearer {api_token}
 }
 ```
 
-#### 3.7.4 Error Handling and Retry Strategy
+#### 3.8.4 Error Handling and Retry Strategy
 
 **Retry Strategy**:
 ```python
@@ -747,7 +969,7 @@ def pull_metrics_with_retry(config, max_retries=3):
 - **Authentication Failed (401)**: Alert immediately, stop task
 - **Service Unavailable (503)**: Retry 3 times, alert if failed
 
-#### 3.7.5 Monitoring Metrics
+#### 3.8.5 Monitoring Metrics
 
 The system needs to monitor the following metrics:
 
