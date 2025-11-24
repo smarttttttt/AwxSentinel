@@ -579,8 +579,8 @@ erDiagram
         timestamp resolved_at
         json metrics_data
         json metadata
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -593,8 +593,8 @@ erDiagram
         json metrics_snapshot
         json metadata
         string created_by
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
     }
 
@@ -606,8 +606,8 @@ erDiagram
         json default_config
         boolean is_active
         int version
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -625,8 +625,8 @@ erDiagram
         timestamp failed_at
         text error_message
         int retry_count
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
     }
 
     ALERT_CONFIG {
@@ -636,8 +636,8 @@ erDiagram
         boolean enabled
         json channel_preferences
         json notification_settings
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -651,8 +651,8 @@ erDiagram
         string time_window
         int priority
         boolean is_active
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
     }
 ```
 
@@ -687,8 +687,8 @@ Stores core alert information, including AI-generated summary content and aggreg
 - `metadata`: Other metadata (JSON format, nullable), stores non-metric information like source system, region, detected_at, etc.
 
 **Common Fields**:
-- `namespace`: Namespace (JSON format) for multi-tenant isolation
-- `checkpoint`: Checkpoint marker (JSON format) for data sync and recovery
+- `namespace`: Namespace (string format) for multi-tenant isolation
+- `checkpoint`: Checkpoint marker (string format) for data sync and recovery
 
 #### 4.2.2 Alert Comment
 Records each trigger event, user comments, and system logs for an Alert.

@@ -579,8 +579,8 @@ erDiagram
         timestamp resolved_at
         json metrics_data
         json metadata
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -593,8 +593,8 @@ erDiagram
         json metrics_snapshot
         json metadata
         string created_by
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
     }
 
@@ -606,8 +606,8 @@ erDiagram
         json default_config
         boolean is_active
         int version
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -625,8 +625,8 @@ erDiagram
         timestamp failed_at
         text error_message
         int retry_count
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
     }
 
     ALERT_CONFIG {
@@ -636,8 +636,8 @@ erDiagram
         boolean enabled
         json channel_preferences
         json notification_settings
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
         timestamp created_at
         timestamp updated_at
     }
@@ -651,8 +651,8 @@ erDiagram
         string time_window
         int priority
         boolean is_active
-        json namespace
-        json checkpoint
+        string namespace
+        string checkpoint
     }
 ```
 
@@ -687,8 +687,8 @@ erDiagram
 - `metadata`: 其他元数据（JSON格式，nullable），存储来源系统、region、detected_at 等非指标信息
 
 **通用字段**：
-- `namespace`: 命名空间（JSON格式），用于多租户隔离
-- `checkpoint`: 检查点标记（JSON格式），用于数据同步和恢复
+- `namespace`: 命名空间（字符串格式），用于多租户隔离
+- `checkpoint`: 检查点标记（字符串格式），用于数据同步和恢复
 
 #### 4.2.2 Alert Comment (警报评论/事件)
 记录Alert的每次触发事件、用户评论和系统日志。
