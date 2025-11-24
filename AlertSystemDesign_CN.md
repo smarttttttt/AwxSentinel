@@ -279,6 +279,17 @@ flowchart TD
     Decision2 -->|需要更多信息| ViewMetrics[查看原始数据]
     Decision2 -->|误报| DismissAlert[忽略警报]
     Decision2 -->|自定义方案| ManualAction[手动创建规则]
+    Decision2 -->|添加备注| AddComment[添加用户备注]
+
+    AddComment --> FillComment[填写备注内容<br/>- 观察到的情况<br/>- 分析结论<br/>- 后续计划]
+    FillComment --> NotifyTeam{通知团队成员?}
+
+    NotifyTeam -->|是| SendCommentNotif[发送备注通知<br/>@提及相关人员]
+    NotifyTeam -->|否| SaveComment[保存备注]
+
+    SendCommentNotif --> SaveComment
+    SaveComment --> BackToDetail[返回详情页<br/>显示新增备注]
+    BackToDetail --> ViewDetails
 
     ViewMetrics --> Decision3{重新评估}
     Decision3 -->|确认攻击| DeployRule

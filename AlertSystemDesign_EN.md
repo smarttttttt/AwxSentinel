@@ -279,6 +279,17 @@ flowchart TD
     Decision2 -->|Need More Info| ViewMetrics[View Raw Data]
     Decision2 -->|False Positive| DismissAlert[Dismiss Alert]
     Decision2 -->|Custom Solution| ManualAction[Manually Create Rule]
+    Decision2 -->|Add Note| AddComment[Add User Note]
+
+    AddComment --> FillComment[Fill Comment Content<br/>- Observations<br/>- Analysis<br/>- Follow-up Plan]
+    FillComment --> NotifyTeam{Notify Team Members?}
+
+    NotifyTeam -->|Yes| SendCommentNotif[Send Comment Notification<br/>@Mention Relevant Users]
+    NotifyTeam -->|No| SaveComment[Save Comment]
+
+    SendCommentNotif --> SaveComment
+    SaveComment --> BackToDetail[Return to Detail Page<br/>Display New Comment]
+    BackToDetail --> ViewDetails
 
     ViewMetrics --> Decision3{Re-evaluate}
     Decision3 -->|Confirm Attack| DeployRule
