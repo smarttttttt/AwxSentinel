@@ -390,51 +390,31 @@ The Alert system adopts a **hybrid aggregation strategy**, combining session-bas
 
 ```mermaid
 flowchart TD
-    Start([Trigger Condition Met]) --> CalcFingerprint[Calculate Condition Fingerprint<br/>MD5 Hash Algorithm]
-    CalcFingerprint --> CheckSession{Check Active Session<br/>session_status=ACTIVE?<br/>last_active within timeout?}
+    Start([Trigger Condition Met]) --> CalcFingerprint[Calculate Condition Fingerprint]
+    CalcFingerprint --> CheckSession{Check Active Session<br/>last_active < 15min?}
 
-    CheckSession -->|Yes| UpdateSession[Update Session<br/>session_last_active=now<br/>Keep session_status=ACTIVE]
-    CheckSession -->|No| ExpireSession[Mark Session Expired<br/>session_status=EXPIRED]
+    CheckSession -->|Yes| UpdateSession[Update Session<br/>Extend session_last_active]
+    CheckSession -->|No| CheckWindow{Check Sliding Window<br/>Same Alert within 24h?}
 
-    ExpireSession --> CheckWindow{Check Sliding Window<br/>Same fingerprint within 24h?}
+    CheckWindow -->|Yes| CreateNewComment[Create New Comment<br/>Link to Existing Alert]
+    CheckWindow -->|No| CreateNewAlert[Create New Alert<br/>New Session]
 
-    CheckWindow -->|Yes| UseExistingAlert[Use Existing Alert<br/>No new session created]
-    CheckWindow -->|No| CreateNewAlert[Create New Alert<br/>Initialize all fields<br/>session_status=ACTIVE]
+    UpdateSession --> IncrementCount[Increment occurrence_count]
+    CreateNewComment --> IncrementCount
+    CreateNewAlert --> IncrementCount
 
-    UpdateSession --> IncrementCount[Increment occurrence_count<br/>Update last_triggered_at]
-    UseExistingAlert --> IncrementCount
+    IncrementCount --> CheckEscalation{Need Severity Escalation?}
+    CheckEscalation -->|Yes| EscalateSeverity[Escalate Severity<br/>P3→P2→P1]
+    CheckEscalation -->|No| EvalNotification[Evaluate Notification Strategy]
 
-    CreateNewAlert --> SetInitialValues[Set Initial Values<br/>occurrence_count=1<br/>original_severity<br/>session_started_at=now]
-
-    SetInitialValues --> CreateComment[Create Alert Comment<br/>type=TRIGGER_EVENT<br/>Save metrics_snapshot]
-    IncrementCount --> CreateComment
-
-    CreateComment --> CheckEscalation{Need Severity Escalation?<br/>Check escalation rules}
-
-    CheckEscalation -->|Yes| EscalateSeverity[Escalate current_severity<br/>Record escalation_history]
-    CheckEscalation -->|No| DecideNotify{Should Notify?}
-
-    EscalateSeverity --> LogEscalation[Log Escalation Event]
-    LogEscalation --> ForceNotify[Mark: Need Notification<br/>Reason: Severity Escalated]
-
-    DecideNotify -->|Yes| NeedNotify[Mark: Need Notification]
-    DecideNotify -->|No| NoNotify[Mark: No Notification<br/>Reason: Aggregating]
-
-    ForceNotify --> SaveAlert[Save Alert to Database]
-    NeedNotify --> SaveAlert
-    NoNotify --> SaveAlert
-
-    SaveAlert --> End([Flow Complete<br/>Output: Notification Mark])
+    EscalateSeverity --> ForceNotify[Force Send Notification<br/>Severity Escalated]
+    EvalNotification --> NormalFlow[Normal Notification Flow]
 
     style Start fill:#e1f5ff
-    style CreateNewAlert fill:#fff4e1
     style UpdateSession fill:#fff4e1
-    style UseExistingAlert fill:#e1ffe1
+    style CreateNewAlert fill:#e1ffe1
     style EscalateSeverity fill:#ffe1e1
-    style ForceNotify fill:#e1ffe1
-    style NeedNotify fill:#e1ffe1
-    style NoNotify fill:#fff4e1
-    style End fill:#e8e8e8
+    style ForceNotify fill:#ffe1e1
 ```
 
 #### 3.6.3 Notification Sending and Frequency Control Flow

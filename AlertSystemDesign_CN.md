@@ -390,51 +390,31 @@ Alert系统采用**混合聚合策略**，结合会话式聚合、滑动窗口�
 
 ```mermaid
 flowchart TD
-    Start([触发条件满足]) --> CalcFingerprint[计算Condition Fingerprint<br/>MD5哈希算法]
-    CalcFingerprint --> CheckSession{检查活跃会话<br/>session_status=ACTIVE?<br/>last_active within timeout?}
+    Start([触发条件满足]) --> CalcFingerprint[计算Condition Fingerprint]
+    CalcFingerprint --> CheckSession{检查活跃会话<br/>last_active < 15min?}
 
-    CheckSession -->|是| UpdateSession[更新会话<br/>session_last_active=now<br/>保持session_status=ACTIVE]
-    CheckSession -->|否| ExpireSession[标记会话过期<br/>session_status=EXPIRED]
+    CheckSession -->|是| UpdateSession[更新会话<br/>延长session_last_active]
+    CheckSession -->|否| CheckWindow{检查滑动窗口<br/>24h内有相同Alert?}
 
-    ExpireSession --> CheckWindow{检查滑动窗口<br/>24h内有相同fingerprint?}
+    CheckWindow -->|是| CreateNewComment[创建新Comment<br/>关联现有Alert]
+    CheckWindow -->|否| CreateNewAlert[创建新Alert<br/>新建会话]
 
-    CheckWindow -->|是| UseExistingAlert[使用现有Alert<br/>不创建新会话]
-    CheckWindow -->|否| CreateNewAlert[创建新Alert<br/>初始化所有字段<br/>session_status=ACTIVE]
+    UpdateSession --> IncrementCount[递增occurrence_count]
+    CreateNewComment --> IncrementCount
+    CreateNewAlert --> IncrementCount
 
-    UpdateSession --> IncrementCount[递增occurrence_count<br/>更新last_triggered_at]
-    UseExistingAlert --> IncrementCount
+    IncrementCount --> CheckEscalation{需要提升严重程度?}
+    CheckEscalation -->|是| EscalateSeverity[提升严重程度<br/>P3→P2→P1]
+    CheckEscalation -->|否| EvalNotification[评估通知策略]
 
-    CreateNewAlert --> SetInitialValues[设置初始值<br/>occurrence_count=1<br/>original_severity<br/>session_started_at=now]
-
-    SetInitialValues --> CreateComment[创建Alert Comment<br/>type=TRIGGER_EVENT<br/>保存metrics_snapshot]
-    IncrementCount --> CreateComment
-
-    CreateComment --> CheckEscalation{需要提升严重程度?<br/>检查escalation规则}
-
-    CheckEscalation -->|是| EscalateSeverity[提升current_severity<br/>记录escalation_history]
-    CheckEscalation -->|否| DecideNotify{是否需要通知?}
-
-    EscalateSeverity --> LogEscalation[记录提升事件]
-    LogEscalation --> ForceNotify[标记:需要通知<br/>原因:严重程度提升]
-
-    DecideNotify -->|是| NeedNotify[标记:需要通知]
-    DecideNotify -->|否| NoNotify[标记:不通知<br/>原因:聚合中]
-
-    ForceNotify --> SaveAlert[保存Alert到数据库]
-    NeedNotify --> SaveAlert
-    NoNotify --> SaveAlert
-
-    SaveAlert --> End([流程结束<br/>输出:通知标记])
+    EscalateSeverity --> ForceNotify[强制发送通知<br/>严重程度已提升]
+    EvalNotification --> NormalFlow[正常通知流程]
 
     style Start fill:#e1f5ff
-    style CreateNewAlert fill:#fff4e1
     style UpdateSession fill:#fff4e1
-    style UseExistingAlert fill:#e1ffe1
+    style CreateNewAlert fill:#e1ffe1
     style EscalateSeverity fill:#ffe1e1
-    style ForceNotify fill:#e1ffe1
-    style NeedNotify fill:#e1ffe1
-    style NoNotify fill:#fff4e1
-    style End fill:#e8e8e8
+    style ForceNotify fill:#ffe1e1
 ```
 
 #### 3.6.3 通知发送与频控流程
