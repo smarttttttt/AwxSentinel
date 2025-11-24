@@ -552,6 +552,227 @@ ACTIVE → RESOLVED (manually resolved by user)
   - Easier for users to understand, avoiding the complex concept of "session reactivation"
   - Comments clearly record each trigger's time and metrics
 
+### 3.7 Scheduled Metric Pull Flow
+
+The Alert system supports two data acquisition modes: **external system push** and **scheduled active pull**. This section describes the scheduled pull workflow.
+
+#### 3.7.1 Scheduled Pull Architecture
+
+```mermaid
+flowchart TD
+    Start([Scheduled Trigger<br/>Cron: */5 * * * *]) --> LoadConfig[Load Pull Configuration<br/>- Metric Platform endpoints<br/>- Query time window<br/>- Account list]
+
+    LoadConfig --> CheckLastRun{Check Last Run Status}
+    CheckLastRun -->|Running| Skip[Skip Execution<br/>Log Skip Event]
+    CheckLastRun -->|Completed| StartPull[Start Pull Task]
+
+    StartPull --> BuildQuery[Build Query Parameters<br/>time_from: last_run_time<br/>time_to: now<br/>account_id: list]
+
+    BuildQuery --> CallMetricAPI[Call Metric Platform API<br/>GET /metrics/aggregated]
+
+    CallMetricAPI --> CheckResponse{API Response Status}
+    CheckResponse -->|Failed| RetryLogic{Retry Count < 3?}
+    RetryLogic -->|Yes| WaitRetry[Wait Backoff Time<br/>exponential backoff]
+    WaitRetry --> CallMetricAPI
+    RetryLogic -->|No| LogError[Log Error<br/>Send Alert]
+    LogError --> End1([End])
+
+    CheckResponse -->|Success| ParseMetrics[Parse Metrics Data<br/>Extract Metric Values]
+
+    ParseMetrics --> ValidateData{Data Validation}
+    ValidateData -->|Invalid| LogInvalid[Log Invalid Data<br/>Continue Processing]
+    ValidateData -->|Valid| GroupByAccount[Group By Account]
+
+    LogInvalid --> GroupByAccount
+
+    GroupByAccount --> LoopAccounts[Iterate Each Account]
+
+    LoopAccounts --> EvalTrigger[Call Trigger Condition Engine<br/>Evaluate Conditions]
+
+    EvalTrigger --> CheckTrigger{Conditions Met?}
+    CheckTrigger -->|No| NextAccount{More Accounts?}
+    CheckTrigger -->|Yes| CallAlertAPI[Call Alert API<br/>POST /api/v1/alerts/metrics]
+
+    CallAlertAPI --> RecordMetrics[Record Pull Metrics<br/>- Pull count<br/>- Trigger count<br/>- Error count]
+
+    RecordMetrics --> NextAccount
+    NextAccount -->|Yes| LoopAccounts
+    NextAccount -->|No| UpdateLastRun[Update last_run_time<br/>Record Execution Stats]
+
+    UpdateLastRun --> PublishMetrics[Publish Monitoring Metrics<br/>- pull_success_count<br/>- pull_duration_ms<br/>- trigger_rate]
+
+    PublishMetrics --> End2([End])
+
+    Skip --> End3([End])
+
+    style Start fill:#e1f5ff
+    style EvalTrigger fill:#fff4e1
+    style CallAlertAPI fill:#e1ffe1
+    style LogError fill:#ffe1e1
+    style End2 fill:#e1ffe1
+```
+
+#### 3.7.2 Pull Configuration Example
+
+```yaml
+metric_pull_jobs:
+  - job_name: card_testing_detection
+    schedule: "*/5 * * * *"  # Execute every 5 minutes
+    metric_platform:
+      endpoint: "https://metric-platform.awx.im/api/v1/metrics/aggregated"
+      timeout_seconds: 30
+    query:
+      metric_names:
+        - "block_rate"
+        - "failed_auth_rate"
+      time_window: "10min"
+      aggregation: "avg"
+    accounts:
+      type: "all"  # all | whitelist | blacklist
+      # whitelist: ["account_1", "account_2"]
+    alert_type: "CARD_TESTING"
+    enabled: true
+
+  - job_name: velocity_attack_detection
+    schedule: "*/10 * * * *"  # Execute every 10 minutes
+    metric_platform:
+      endpoint: "https://metric-platform.awx.im/api/v1/metrics/aggregated"
+      timeout_seconds: 30
+    query:
+      metric_names:
+        - "transaction_count"
+        - "unique_card_count"
+      time_window: "5min"
+      aggregation: "sum"
+    accounts:
+      type: "whitelist"
+      whitelist: ["high_risk_account_1", "high_risk_account_2"]
+    alert_type: "VELOCITY_ATTACK"
+    enabled: true
+```
+
+#### 3.7.3 Metric Platform API Request Example
+
+**Request**:
+```http
+GET /api/v1/metrics/aggregated?time_from=2025-11-24T10:00:00Z&time_to=2025-11-24T10:05:00Z&account_ids=acc_1,acc_2&metric_names=block_rate,failed_auth_rate
+Authorization: Bearer {api_token}
+```
+
+**Response**:
+```json
+{
+  "data": [
+    {
+      "account_id": "acc_1",
+      "time_window": {
+        "from": "2025-11-24T10:00:00Z",
+        "to": "2025-11-24T10:05:00Z"
+      },
+      "metrics": [
+        {
+          "metric_name": "block_rate",
+          "metric_value": 0.45,
+          "aggregation": "avg",
+          "sample_count": 1000
+        },
+        {
+          "metric_name": "failed_auth_rate",
+          "metric_value": 0.67,
+          "aggregation": "avg",
+          "sample_count": 1000
+        }
+      ],
+      "metadata": {
+        "region": "AP",
+        "source_system": "metric-platform"
+      }
+    },
+    {
+      "account_id": "acc_2",
+      "time_window": {
+        "from": "2025-11-24T10:00:00Z",
+        "to": "2025-11-24T10:05:00Z"
+      },
+      "metrics": [
+        {
+          "metric_name": "block_rate",
+          "metric_value": 0.15,
+          "aggregation": "avg",
+          "sample_count": 500
+        },
+        {
+          "metric_name": "failed_auth_rate",
+          "metric_value": 0.22,
+          "aggregation": "avg",
+          "sample_count": 500
+        }
+      ]
+    }
+  ],
+  "pagination": {
+    "total": 2,
+    "has_more": false
+  }
+}
+```
+
+#### 3.7.4 Error Handling and Retry Strategy
+
+**Retry Strategy**:
+```python
+def pull_metrics_with_retry(config, max_retries=3):
+    backoff_seconds = [1, 2, 4]  # Exponential backoff
+
+    for attempt in range(max_retries):
+        try:
+            response = call_metric_platform_api(config)
+            return response
+        except APIError as e:
+            if attempt < max_retries - 1:
+                wait_time = backoff_seconds[attempt]
+                logger.warning(f"API call failed, retry in {wait_time}s: {e}")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"API call failed after {max_retries} attempts: {e}")
+                # Send alert
+                send_alert(f"Metric pull job failed: {config.job_name}")
+                raise
+```
+
+**Error Type Handling**:
+- **Network Timeout**: Retry 3 times, log error
+- **API Rate Limit (429)**: Wait Retry-After time then retry
+- **Data Format Error**: Skip the data, continue processing others
+- **Authentication Failed (401)**: Alert immediately, stop task
+- **Service Unavailable (503)**: Retry 3 times, alert if failed
+
+#### 3.7.5 Monitoring Metrics
+
+The system needs to monitor the following metrics:
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `metric_pull_success_count` | Counter | Successful pull count |
+| `metric_pull_failure_count` | Counter | Failed pull count |
+| `metric_pull_duration_ms` | Histogram | Pull duration (milliseconds) |
+| `metric_pull_data_count` | Gauge | Data count per pull |
+| `metric_pull_trigger_rate` | Gauge | Alert trigger rate |
+| `metric_pull_last_run_timestamp` | Gauge | Last execution timestamp |
+
+**Alert Rules**:
+```yaml
+- name: metric_pull_failure_rate_high
+  condition: metric_pull_failure_count / metric_pull_success_count > 0.1
+  duration: 10m
+  severity: high
+
+- name: metric_pull_lag_too_long
+  condition: now() - metric_pull_last_run_timestamp > 600
+  duration: 5m
+  severity: critical
+```
+
 ---
 
 ## 4. Data Model

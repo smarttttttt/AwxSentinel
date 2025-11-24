@@ -552,6 +552,227 @@ ACTIVE → RESOLVED (用户手动解决)
   - 用户更容易理解，避免"会话重新激活"的复杂概念
   - Comment清晰记录每次触发的时间和指标
 
+### 3.7 定时拉取数据流程
+
+Alert系统支持两种数据获取方式：**外部系统推送**和**定时主动拉取**。本节描述定时拉取模式的工作流程。
+
+#### 3.7.1 定时拉取架构
+
+```mermaid
+flowchart TD
+    Start([定时调度器触发<br/>Cron: */5 * * * *]) --> LoadConfig[加载拉取配置<br/>- Metric Platform endpoints<br/>- 查询时间窗口<br/>- Account列表]
+
+    LoadConfig --> CheckLastRun{检查上次执行状态}
+    CheckLastRun -->|执行中| Skip[跳过本次执行<br/>记录Skip日志]
+    CheckLastRun -->|已完成| StartPull[开始拉取任务]
+
+    StartPull --> BuildQuery[构建查询参数<br/>time_from: last_run_time<br/>time_to: now<br/>account_id: list]
+
+    BuildQuery --> CallMetricAPI[调用Metric Platform API<br/>GET /metrics/aggregated]
+
+    CallMetricAPI --> CheckResponse{API响应状态}
+    CheckResponse -->|失败| RetryLogic{重试次数 < 3?}
+    RetryLogic -->|是| WaitRetry[等待退避时间<br/>exponential backoff]
+    WaitRetry --> CallMetricAPI
+    RetryLogic -->|否| LogError[记录错误日志<br/>发送告警]
+    LogError --> End1([结束])
+
+    CheckResponse -->|成功| ParseMetrics[解析Metrics数据<br/>提取指标值]
+
+    ParseMetrics --> ValidateData{数据验证}
+    ValidateData -->|无效| LogInvalid[记录无效数据<br/>继续处理其他数据]
+    ValidateData -->|有效| GroupByAccount[按Account分组]
+
+    LogInvalid --> GroupByAccount
+
+    GroupByAccount --> LoopAccounts[遍历每个Account]
+
+    LoopAccounts --> EvalTrigger[调用触发条件引擎<br/>Evaluate Conditions]
+
+    EvalTrigger --> CheckTrigger{满足触发条件?}
+    CheckTrigger -->|否| NextAccount{还有Account?}
+    CheckTrigger -->|是| CallAlertAPI[调用Alert API<br/>POST /api/v1/alerts/metrics]
+
+    CallAlertAPI --> RecordMetrics[记录拉取指标<br/>- 拉取数量<br/>- 触发数量<br/>- 错误数量]
+
+    RecordMetrics --> NextAccount
+    NextAccount -->|是| LoopAccounts
+    NextAccount -->|否| UpdateLastRun[更新last_run_time<br/>记录执行统计]
+
+    UpdateLastRun --> PublishMetrics[发布监控指标<br/>- pull_success_count<br/>- pull_duration_ms<br/>- trigger_rate]
+
+    PublishMetrics --> End2([结束])
+
+    Skip --> End3([结束])
+
+    style Start fill:#e1f5ff
+    style EvalTrigger fill:#fff4e1
+    style CallAlertAPI fill:#e1ffe1
+    style LogError fill:#ffe1e1
+    style End2 fill:#e1ffe1
+```
+
+#### 3.7.2 拉取配置示例
+
+```yaml
+metric_pull_jobs:
+  - job_name: card_testing_detection
+    schedule: "*/5 * * * *"  # 每5分钟执行一次
+    metric_platform:
+      endpoint: "https://metric-platform.awx.im/api/v1/metrics/aggregated"
+      timeout_seconds: 30
+    query:
+      metric_names:
+        - "block_rate"
+        - "failed_auth_rate"
+      time_window: "10min"
+      aggregation: "avg"
+    accounts:
+      type: "all"  # all | whitelist | blacklist
+      # whitelist: ["account_1", "account_2"]
+    alert_type: "CARD_TESTING"
+    enabled: true
+
+  - job_name: velocity_attack_detection
+    schedule: "*/10 * * * *"  # 每10分钟执行一次
+    metric_platform:
+      endpoint: "https://metric-platform.awx.im/api/v1/metrics/aggregated"
+      timeout_seconds: 30
+    query:
+      metric_names:
+        - "transaction_count"
+        - "unique_card_count"
+      time_window: "5min"
+      aggregation: "sum"
+    accounts:
+      type: "whitelist"
+      whitelist: ["high_risk_account_1", "high_risk_account_2"]
+    alert_type: "VELOCITY_ATTACK"
+    enabled: true
+```
+
+#### 3.7.3 Metric Platform API 请求示例
+
+**请求**：
+```http
+GET /api/v1/metrics/aggregated?time_from=2025-11-24T10:00:00Z&time_to=2025-11-24T10:05:00Z&account_ids=acc_1,acc_2&metric_names=block_rate,failed_auth_rate
+Authorization: Bearer {api_token}
+```
+
+**响应**：
+```json
+{
+  "data": [
+    {
+      "account_id": "acc_1",
+      "time_window": {
+        "from": "2025-11-24T10:00:00Z",
+        "to": "2025-11-24T10:05:00Z"
+      },
+      "metrics": [
+        {
+          "metric_name": "block_rate",
+          "metric_value": 0.45,
+          "aggregation": "avg",
+          "sample_count": 1000
+        },
+        {
+          "metric_name": "failed_auth_rate",
+          "metric_value": 0.67,
+          "aggregation": "avg",
+          "sample_count": 1000
+        }
+      ],
+      "metadata": {
+        "region": "AP",
+        "source_system": "metric-platform"
+      }
+    },
+    {
+      "account_id": "acc_2",
+      "time_window": {
+        "from": "2025-11-24T10:00:00Z",
+        "to": "2025-11-24T10:05:00Z"
+      },
+      "metrics": [
+        {
+          "metric_name": "block_rate",
+          "metric_value": 0.15,
+          "aggregation": "avg",
+          "sample_count": 500
+        },
+        {
+          "metric_name": "failed_auth_rate",
+          "metric_value": 0.22,
+          "aggregation": "avg",
+          "sample_count": 500
+        }
+      ]
+    }
+  ],
+  "pagination": {
+    "total": 2,
+    "has_more": false
+  }
+}
+```
+
+#### 3.7.4 错误处理与重试策略
+
+**重试策略**：
+```python
+def pull_metrics_with_retry(config, max_retries=3):
+    backoff_seconds = [1, 2, 4]  # 指数退避
+
+    for attempt in range(max_retries):
+        try:
+            response = call_metric_platform_api(config)
+            return response
+        except APIError as e:
+            if attempt < max_retries - 1:
+                wait_time = backoff_seconds[attempt]
+                logger.warning(f"API call failed, retry in {wait_time}s: {e}")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"API call failed after {max_retries} attempts: {e}")
+                # 发送告警
+                send_alert(f"Metric pull job failed: {config.job_name}")
+                raise
+```
+
+**错误类型处理**：
+- **网络超时**：重试3次，记录错误日志
+- **API限流（429）**：等待Retry-After时间后重试
+- **数据格式错误**：跳过该条数据，继续处理其他数据
+- **认证失败（401）**：立即告警，停止任务
+- **服务不可用（503）**：重试3次，失败后告警
+
+#### 3.7.5 监控指标
+
+系统需要监控以下指标：
+
+| 指标名称 | 类型 | 描述 |
+|---------|------|------|
+| `metric_pull_success_count` | Counter | 成功拉取次数 |
+| `metric_pull_failure_count` | Counter | 失败拉取次数 |
+| `metric_pull_duration_ms` | Histogram | 拉取耗时（毫秒） |
+| `metric_pull_data_count` | Gauge | 每次拉取的数据条数 |
+| `metric_pull_trigger_rate` | Gauge | 触发告警的比率 |
+| `metric_pull_last_run_timestamp` | Gauge | 上次执行时间戳 |
+
+**告警规则**：
+```yaml
+- name: metric_pull_failure_rate_high
+  condition: metric_pull_failure_count / metric_pull_success_count > 0.1
+  duration: 10m
+  severity: high
+
+- name: metric_pull_lag_too_long
+  condition: now() - metric_pull_last_run_timestamp > 600
+  duration: 5m
+  severity: critical
+```
+
 ---
 
 ## 4. 数据模型
