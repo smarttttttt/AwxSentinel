@@ -554,223 +554,328 @@ ACTIVE → RESOLVED (manually resolved by user)
 
 ### 3.7 Trigger Condition Engine Technical Comparison
 
-Trigger condition evaluation is a core function of the Alert system. We compare two implementation approaches: **Reusing existing Rule Engine** vs **Independent Condition Flow**.
+Trigger condition evaluation is a core function of the Alert system. We compare two implementation approaches: **Plan A: Reuse Rule Engine** vs **Plan B: Independent Condition Flow**.
 
-#### 3.7.1 Comparison Overview
+##### **1. Time Cost**
 
-| Dimension | Option A: Reuse Rule Engine | Option B: Independent Condition Flow | Recommendation |
-|-----------|---------------------------|-------------------------------------|----------------|
-| **Development Time** | 2-3 weeks | 1-2 weeks | ✅ Option B |
-| **Maintenance Cost** | High (depends on external team) | Low (team controlled) | ✅ Option B |
-| **System Complexity** | High (heavy dependency) | Low (lightweight) | ✅ Option B |
-| **Performance** | Over-optimized (real-time transaction level) | Meets needs (batch processing level) | ✅ Option B |
-| **Extensibility** | Strong (supports complex DSL) | Moderate (meets current needs) | ⚖️ Depends |
-| **Team Familiarity** | Need to learn Rule Engine | Simple and intuitive | ✅ Option B |
+| Dimension | Plan A: Reuse Rule Engine | Plan B: Independent Condition Flow |
+|-----------|---------------------------|-------------------------------------|
+| **Development Cycle** | 2-3 weeks | 1-2 weeks |
+| **Learning Cost** | Need to learn Rule Engine architecture, DSL syntax | Simple threshold comparison, no learning cost |
+| **Integration Complexity** | Need adapter layer to convert Metrics → Rule | Directly implement evaluation logic |
+| **Advantage** | - | ✅ Save 33%-50% development time |
 
-#### 3.7.2 Detailed Analysis
+---
 
-##### **1. Development Time Cost**
+##### **2. Maintenance Difficulty and Iteration Speed**
 
-**Option A: Reuse Rule Engine**
+| Dimension | Plan A | Plan B |
+|-----------|--------|--------|
+| **Maintenance Cost/Year** | ~20-26 person-days | ~4-6.5 person-days |
+| **Bug Fix** | Cross-team coordination, 2 days/time | Team autonomous, 0.5 days/time |
+| **Feature Iteration** | Depends on Rule Engine team scheduling | Immediate response, 1-2 hours to production |
+| **Knowledge Transfer** | New member learning curve 5-7 days | New member learning 1-2 days |
+| **Advantage** | - | ✅ Save 75% maintenance time<br/>✅ Fast iteration, no dependencies |
+
+---
+
+##### **3. System Complexity and External Dependencies**
+
+**Plan A: Heavy Dependency Architecture**
 ```
-Week 1-2: Learning Rule Engine
-  - Understand RuleDefinition data model
-  - Learn DSL/Spring EL syntax
-  - Familiarize with VariableEvaluator mechanism
-  - Integrate risk-rule-management-service API
-
-Week 2-3: Adaptation and Integration
-  - Design Metrics to RuleVariable conversion layer
-  - Implement trigger condition to Rule Expression mapping
-  - Handle Rule Engine response adaptation
-  - Testing and debugging integration issues
-
-Total: 2-3 weeks
-Risk: Depends on Rule Engine team support, possible blockers
-```
-
-**Option B: Independent Condition Flow**
-```
-Week 1: Core Implementation
-  - Day 1-2: Design TriggerCondition data model
-  - Day 3-4: Implement condition evaluation engine (simple comparison logic)
-  - Day 5: Implement AND/OR combination logic
-
-Week 2: Testing and Optimization
-  - Day 1-2: Unit testing
-  - Day 3: Integration testing
-  - Day 4-5: Performance testing and optimization
-
-Total: 1-2 weeks
-Risk: Low, team has full control
+Alert → Rule Management → Decision Engine → 100+ Evaluators
+  ↓          ↓               ↓                  ↓
+RPC calls  Data conversion  Multiple serialization  Multiple failure points
 ```
 
-##### **2. Maintenance Cost Comparison**
+**Plan B: Lightweight Architecture**
+```
+Alert API → Condition Engine → Alert Service
+            ↓ (pure in-memory computation)
+        Single process calls, zero dependencies
+```
 
-**Annual Maintenance Cost Estimate**:
+| Dimension | Plan A | Plan B |
+|-----------|--------|--------|
+| **Dependent Services** | 2 external services | 0 |
+| **Call Chain** | 4 layers | 1 layer |
+| **Failure Points** | 4 | 1 |
+| **Code Volume** | ~200 lines + adapter layer | ~30 lines |
+| **Advantage** | - | ✅ Zero dependencies, simple architecture<br/>✅ Fault isolation, easy to debug |
 
-**Option A**: ~20-26 person-days/year
-- Version upgrade adaptation: 2-3 times/year × 3 days = 6-9 days
-- Bug fix coordination: 4-5 times/year × 2 days = 8-10 days
-- Knowledge transfer: New member learning curve 5-7 days
+---
 
-**Option B**: ~4-6.5 person-days/year
-- Bug fixes: 2-3 times/year × 0.5 days = 1-1.5 days
-- Feature enhancements: 2-3 times/year × 1 day = 2-3 days
-- Knowledge transfer: New member learning 1-2 days
+##### **4. Requirements Matching**
 
-**Maintenance Cost Comparison**: Option B saves **75%** maintenance time
-
-##### **3. System Complexity Comparison**
-
-**Complexity Issues with Option A**:
-1. **Long dependency chain**: Alert → Rule Management → Decision Engine → Evaluators
-2. **Multiple data transformations**: Metrics → RuleVariable → Expression → Result
-3. **Multiple service calls**: 2-3 RPC calls per evaluation
-4. **Multiple failure points**: Any service failure affects Alert system
-
-**Simplicity Advantages of Option B**:
-1. **No external dependencies**: All logic within Alert Service
-2. **Short call chain**: API → Engine → Service, single process calls
-3. **Fault isolation**: Alert system runs independently
-4. **Easy to test**: Pure function logic, simple unit test coverage
-
-##### **4. Performance Comparison**
-
-**Test Scenario**: Evaluate 1000 Accounts with 2 conditions each
-
-| Performance Metric | Option A: Rule Engine | Option B: Condition Flow |
-|-------------------|----------------------|-------------------------|
-| **Single Evaluation Latency** | 50-100ms (RPC calls) | 1-5ms (in-memory) |
-| **QPS** | ~100 (limited by RPC) | ~5000 (limited by CPU) |
-| **Resource Usage** | High (multiple serialization) | Low (pure memory) |
-| **Scalability** | Need to scale Rule Engine | Single machine sufficient |
-
-**Performance Difference Reasons**:
-- Rule Engine designed for **real-time transaction decisions** (microsecond response)
-- Alert scenario is **batch processing mode** (minute-level checks)
-- Rule Engine's high-performance optimization is **over-engineering** for Alert scenarios
-
-##### **5. Functional Requirements Fit**
-
-**Actual Alert Trigger Condition Needs**:
+**Actual Alert Needs**: 99% are simple threshold comparisons
 ```python
-# 99% of trigger conditions are simple threshold comparisons
-conditions = [
-    "block_rate > 0.3",           # ✅ Simple comparison
-    "failed_auth_rate > 0.5",     # ✅ Simple comparison
-    "transaction_count > 1000",   # ✅ Simple comparison
-]
-
-# AND/OR combination
-logic = "block_rate > 0.3 AND failed_auth_rate > 0.5"  # ✅ Simple combination
+"block_rate > 0.3"
+"failed_auth_rate > 0.5"
+"block_rate > 0.3 AND failed_auth_rate > 0.5"
 ```
 
-**Rule Engine Complex Capabilities (Alert doesn't need)**:
-```java
-// ❌ Alert doesn't need these complex capabilities
-- DSL scripting language
-- Spring EL expressions
-- 100+ VariableEvaluators
-- Nested rules
-- Dynamic variable calculation
-- Rule priority scheduling
-- Complex business logic
-```
+**Rule Engine Capabilities**: Supports DSL, Spring EL, 100+ Evaluators, nested rules, etc.
 
-**Conclusion**: Alert only needs **5%** of Rule Engine's capabilities but bears **100%** of its complexity.
+| Dimension | Plan A | Plan B |
+|-----------|--------|--------|
+| **Requirements Coverage** | Uses 5% of capabilities | Perfect match for 100% needs |
+| **Over-engineering** | ❌ Bears 100% complexity | ✅ Lightweight, just right |
 
-##### **6. Code Implementation Comparison**
+---
 
-**Code Comparison**:
-- Option A: ~200 lines, depends on 2 external services
-- Option B: ~30 lines, zero dependencies
-- **Code reduction: 85%**
+##### **5. Functional Fit**
 
-##### **7. Extensibility Comparison**
+**Performance Comparison** (Evaluate 1000 Accounts, 2 conditions each):
 
-**Future Possible Requirements**:
+| Metric | Plan A | Plan B | Improvement |
+|--------|--------|--------|-------------|
+| **Latency** | 50-100ms | 1-5ms | 10-20x |
+| **QPS** | ~100 | ~5000 | 50x |
+| **Resource Usage** | High (RPC serialization) | Low (pure memory) | - |
 
-| Requirement | Option A: Rule Engine | Option B: Condition Flow | Implementation Difficulty |
-|------------|----------------------|-------------------------|--------------------------|
-| Add operators (contains, in) | Need Rule Engine support | Add case branches | B simpler |
-| Time range conditions | Adapt TimeWindow Variable | Add time comparison logic | B simpler |
-| Condition priority sorting | Native Rule Engine support | Implement yourself | A simpler |
-| Complex nested logic | Native Rule Engine support | Need recursive implementation | A simpler |
+---
 
-**Assessment**:
-- First two requirements (90% probability): Option B better
-- Last two requirements (10% probability): Option A better
+##### **6. Extensibility and Migration Risks**
 
-**Strategy**: Start with Option B, migrate to Rule Engine if complex capabilities truly needed (migration cost controllable)
+**Future Requirements Prediction**:
 
-##### **8. Risk Assessment**
+| Requirement | Probability | Plan A | Plan B | Recommended |
+|------------|-------------|--------|--------|-------------|
+| Add operators (contains, in) | 90% | Need Rule Engine support | Add case branches | B |
+| Time range conditions | 90% | Adapt TimeWindow Variable | Add comparison logic | B |
+| Complex nested logic | 10% | Native support | Need recursive implementation | A |
 
-**Option A Risks**:
-1. 🔴 **High dependency risk**: Rule Engine team architecture changes directly impact Alert
-2. 🔴 **Technical debt risk**: Heavy dependency, high long-term maintenance cost
-3. 🟡 **Performance risk**: RPC calls increase latency, may affect batch processing
-4. 🟡 **Learning curve risk**: Team members need to learn Rule Engine
+**Migration Risks**:
+- Plan A → Plan B: ❌ High risk, need to rewrite adapter layer
+- Plan B → Plan A: ✅ Low risk, keep interface, switch backend only
 
-**Option B Risks**:
-1. 🟢 **Functional gap risk** (low): Current needs simple, can migrate if complex capabilities needed
-2. 🟢 **Performance risk** (low): Pure memory calculation, performance exceeds requirements
-3. 🟢 **Maintenance risk** (low): Simple code, team fully controls
+**Strategy**: Start with Plan B, migrate later if complex capabilities needed (migration cost controllable)
 
-#### 3.7.3 Recommendation: Independent Condition Flow
+---
 
-**Recommendation Reasons**:
+#### 3.7.2 Recommendation
 
-1. ✅ **Lower development cost**: 1-2 weeks vs 2-3 weeks, saves 33%-50% time
-2. ✅ **Lower maintenance cost**: 4-6.5 person-days/year vs 20-26 person-days/year, saves 75%
-3. ✅ **Simpler system**: Zero dependencies, short call chain, easy to debug
-4. ✅ **Better performance**: 1-5ms vs 50-100ms, 10-20x faster
-5. ✅ **Team autonomy**: Not affected by external teams, quick response to needs
-6. ✅ **Better fit**: Perfectly matches current needs, no over-engineering
+**Recommended Approach: Plan B - Independent Condition Flow**
 
-**Implementation Suggestion**:
+**Core Reasons**:
+
+| Advantage Dimension | Specific Performance |
+|--------------------|--------------------|
+| ⏱️ **Faster Delivery** | Save 33%-50% development time |
+| 💰 **Lower Cost** | Save 75% annual maintenance cost |
+| 🎯 **Better Match** | Perfect fit for current needs, no over-engineering |
+| 🚀 **Faster Iteration** | No dependencies, 1-2 hours to production |
+| 🔧 **Easier Maintenance** | Simple code, full team control |
+| ⚡ **Higher Performance** | 10-20x faster |
+
+**Implementation Path**:
 
 ```kotlin
-// Phase 1: MVP Implementation (1 week)
+// Phase 1: MVP (1 week)
 class SimpleTriggerConditionEngine {
     fun evaluate(metrics: Map<String, Double>,
                  conditions: List<TriggerCondition>): Boolean {
-        // Support 6 basic operators
+        // Support 6 operators: >, >=, <, <=, ==, !=
         // Support AND/OR logic
     }
 }
 
-// Phase 2: Enhanced Features (optional, as needed)
-- Add condition priority sorting
-- Support time range conditions
-- Add more operators (contains, in, regex)
+// Phase 2: Enhance as needed
+- More operators (contains, in, regex)
+- Time range conditions
+- Condition priority
 
-// Phase 3: Future Migration Path (if truly needed)
+// Phase 3: Future migration (if needed)
 - Keep existing interface
 - Switch backend to Rule Engine
-- Seamless upgrade for users
 ```
 
-**Key Decision Point**:
-
-> **Occam's Razor Principle**: Entities should not be multiplied beyond necessity.
-> Alert's trigger condition evaluation is a **simple threshold comparison problem**, doesn't need complex rule engine.
-
-**However, Rule Engine MUST be used in these scenarios**:
-- ✅ **Auto-deploy rules**: AI-recommended rules must be deployed through Rule Management Service
-- ✅ **Rule management**: Merchant-created rules need to be managed in Rule Engine
+**Responsibility Division**:
 
 ```mermaid
 graph LR
-    A[Metric Data] -->|Simple threshold comparison| B[Condition Flow<br/>Independent]
+    A[Metric Data] -->|Simple threshold comparison| B[Condition Flow<br/>✅ Independent]
     B -->|Trigger Alert| C[AI Agent]
-    C -->|Generate rule DSL| D[Rule Management<br/>Reuse existing]
-    D -->|Deploy rule| E[Risk Decision<br/>Reuse existing]
+    C -->|Generate rule DSL| D[Rule Management<br/>✅ Reuse existing]
+    D -->|Deploy rule| E[Risk Decision<br/>✅ Reuse existing]
 
     style B fill:#e1ffe1
     style D fill:#fff4e1
     style E fill:#fff4e1
 ```
+
+**Key Principle**:
+> **Occam's Razor**: Alert only needs 5% of Rule Engine's capabilities, should not bear 100% of its complexity.
+
+**Rule Engine MUST be used for**:
+- ✅ AI-recommended rule deployment
+- ✅ Merchant-created rule management
+
+---
+
+#### 3.7.3 Plan A Implementation Flow (If Choosing Rule Engine)
+
+For reference, if you choose Plan A to reuse the existing Rule Engine, here is the detailed integration flow:
+
+```mermaid
+sequenceDiagram
+    participant MP as Metric Platform
+    participant API as Alert API
+    participant Adapter as Metrics→Rule<br/>Adapter Layer
+    participant RMS as Rule Management<br/>Service
+    participant DE as Decision Engine
+    participant AS as Alert Service
+
+    MP->>API: POST /api/v1/alerts/metrics<br/>{accountId, metrics}
+    API->>API: Validate Request
+
+    API->>Adapter: Convert Metrics to RuleVariable
+    Note over Adapter: Transformation Logic<br/>metric_name → variable_name<br/>metric_value → variable_value
+
+    Adapter->>Adapter: Build RuleDiscoveryRequest
+    Note over Adapter: {<br/>  tenant: "awx"<br/>  namespace: "alert"<br/>  flow: "card_testing"<br/>  variables: [...]<br/>}
+
+    Adapter->>RMS: GET /rules/discovery<br/>{tenant, namespace, flow}
+    RMS->>RMS: Query RuleDefinition<br/>by tenant+namespace+flow
+    RMS-->>Adapter: Return RuleDefinition[]
+
+    alt No Rules Found
+        Adapter->>API: Return: No Trigger
+        API->>MP: 200 OK (no alert)
+    else Rules Found
+        Adapter->>Adapter: Build DecisionRequest
+        Note over Adapter: Map RuleVariable to<br/>DecisionEngine format
+
+        Adapter->>DE: POST /decision/evaluate<br/>{rules, variables}
+        DE->>DE: Evaluate with 100+ Evaluators<br/>DSL/Spring EL parsing
+        DE-->>Adapter: Return DecisionResult
+
+        Adapter->>Adapter: Parse DecisionResult
+        Note over Adapter: Extract decision code<br/>Map to Alert trigger
+
+        alt Decision = BLOCK/REVIEW
+            Adapter->>AS: Trigger Alert Creation
+            AS->>AS: Generate AI Summary
+            AS->>AS: Save Alert
+            AS->>API: Return alertId
+            API->>MP: 201 Created
+        else Decision = APPROVE
+            Adapter->>API: Return: No Trigger
+            API->>MP: 200 OK (no alert)
+        end
+    end
+```
+
+**Key Integration Steps**:
+
+**Step 1: Create Adapter Layer** (Week 1-2)
+```kotlin
+class MetricsToRuleAdapter {
+    fun convertToRuleVariable(metrics: List<Metric>): List<RuleVariable> {
+        return metrics.map { metric ->
+            RuleVariable(
+                name = "metric_${metric.metric_name}",
+                type = "DOUBLE",
+                value = metric.metric_value.toString(),
+                source = "METRIC_PLATFORM"
+            )
+        }
+    }
+
+    fun buildRuleDiscoveryRequest(
+        context: AlertContext,
+        variables: List<RuleVariable>
+    ): RuleDiscoveryRequest {
+        return RuleDiscoveryRequest(
+            tenant = context.tenant,
+            namespace = "alert",
+            flow = context.alert_type.toLowerCase(),
+            variables = variables
+        )
+    }
+}
+```
+
+**Step 2: Configure RuleDefinition** (Manual Setup)
+```json
+{
+  "tenant": "awx",
+  "namespace": "alert",
+  "flow": "card_testing",
+  "type": "DSL",
+  "value": "metric_block_rate > 0.3 AND metric_failed_auth_rate > 0.5",
+  "evaluationStrategies": [
+    {
+      "type": "SPRING_EL",
+      "priority": 1
+    }
+  ],
+  "variables": [
+    {
+      "name": "metric_block_rate",
+      "type": "DOUBLE",
+      "source": "METRIC_PLATFORM"
+    },
+    {
+      "name": "metric_failed_auth_rate",
+      "type": "DOUBLE",
+      "source": "METRIC_PLATFORM"
+    }
+  ],
+  "status": "ACTIVE"
+}
+```
+
+**Step 3: Handle Decision Engine Response**
+```kotlin
+class DecisionResultAdapter {
+    fun shouldTriggerAlert(decisionResult: DecisionResult): Boolean {
+        return when (decisionResult.code) {
+            DecisionCode.BLOCK, DecisionCode.REVIEW -> true
+            DecisionCode.APPROVE -> false
+            else -> false
+        }
+    }
+
+    fun extractTriggerReasons(decisionResult: DecisionResult): List<String> {
+        return decisionResult.details
+            .filter { it.matched }
+            .map { it.ruleName }
+    }
+}
+```
+
+**Challenges and Complexity**:
+
+1. **Data Mapping Complexity**:
+   - Metrics format ≠ RuleVariable format
+   - Need bidirectional conversion
+   - Naming convention conflicts
+
+2. **Error Handling**:
+   - Rule Engine service downtime
+   - Network timeout (RPC calls)
+   - Version compatibility issues
+
+3. **Performance Overhead**:
+   - 2-3 RPC calls per evaluation
+   - Serialization/deserialization cost
+   - Network latency
+
+4. **Maintenance Burden**:
+   - Rule Engine API changes → Adapter update
+   - Version upgrade coordination
+   - Dependency on external team
+
+**Comparison with Plan B**:
+
+| Aspect | Plan A (Rule Engine) | Plan B (Independent) |
+|--------|---------------------|---------------------|
+| Code Complexity | High (200+ lines adapter) | Low (30 lines) |
+| External Calls | 2-3 RPC calls | 0 |
+| Latency | 50-100ms | 1-5ms |
+| Failure Points | 4 (API, RMS, DE, Network) | 1 (API) |
+| Team Autonomy | Low | High |
 
 ---
 

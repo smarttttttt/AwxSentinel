@@ -554,429 +554,327 @@ ACTIVE → RESOLVED (用户手动解决)
 
 ### 3.7 Trigger Condition Engine 技术方案对比
 
-Alert 系统的触发条件评估是核心功能之一。我们对比两种实现方案：**复用现有 Rule Engine** vs **独立实现 Condition Flow**。
+Alert 系统的触发条件评估是核心功能之一。我们对比两种实现方案：**Plan A: 复用 Rule Engine** vs **Plan B: 独立 Condition Flow**。
 
-#### 3.7.1 方案对比概览
+##### **1. 时间成本**
 
-| 对比维度 | 方案A: 复用 Rule Engine | 方案B: 独立 Condition Flow | 推荐 |
-|---------|------------------------|---------------------------|------|
-| **开发时间** | 2-3周 | 1-2周 | ✅ 方案B |
-| **维护成本** | 高（依赖外部团队） | 低（团队自主可控） | ✅ 方案B |
-| **系统复杂度** | 高（引入重度依赖） | 低（轻量级实现） | ✅ 方案B |
-| **性能** | 过度优化（实时交易级） | 满足需求（批处理级） | ✅ 方案B |
-| **扩展性** | 强（支持复杂DSL） | 适中（满足当前需求） | ⚖️ 看需求 |
-| **团队熟悉度** | 需要学习 Rule Engine | 简单直观 | ✅ 方案B |
-
-#### 3.7.2 详细对比分析
-
-##### **1. 开发时间成本**
-
-**方案A: 复用 Rule Engine**
-```
-Week 1-2: 学习 Rule Engine
-  - 理解 RuleDefinition 数据模型
-  - 学习 DSL/Spring EL 语法
-  - 熟悉 VariableEvaluator 机制
-  - 对接 risk-rule-management-service API
-
-Week 2-3: 适配集成
-  - 设计 Metrics 到 RuleVariable 的转换层
-  - 实现触发条件到 Rule Expression 的映射
-  - 处理 Rule Engine 返回结果的适配
-  - 测试和调试集成问题
-
-总计: 2-3周
-风险: 依赖 Rule Engine 团队支持，可能有阻塞
-```
-
-**方案B: 独立 Condition Flow**
-```
-Week 1: 核心实现
-  - Day 1-2: 设计 TriggerCondition 数据模型
-  - Day 3-4: 实现条件评估引擎（简单比较逻辑）
-  - Day 5: 实现 AND/OR 组合逻辑
-
-Week 2: 测试和优化
-  - Day 1-2: 单元测试
-  - Day 3: 集成测试
-  - Day 4-5: 性能测试和优化
-
-总计: 1-2周
-风险: 低，团队完全自主控制
-```
-
-##### **2. 维护成本对比**
-
-**方案A: 复用 Rule Engine**
-
-```mermaid
-graph LR
-    A[需求变更] --> B{修改点在哪?}
-    B -->|Trigger条件逻辑| C[修改 Alert Service]
-    B -->|Rule Engine升级| D[等待 Rule Team<br/>可能需要数周]
-    B -->|数据模型变更| E[协调两个团队<br/>增加沟通成本]
-
-    D --> F[阻塞业务需求]
-    E --> F
-
-    style D fill:#ffe1e1
-    style E fill:#ffe1e1
-    style F fill:#ffe1e1
-```
-
-**维护痛点**：
-- ❌ **依赖外部团队**：Rule Engine 由另一个团队维护，Bug修复、功能升级需要跨团队协调
-- ❌ **版本兼容性**：Rule Engine 升级可能破坏兼容性，需要额外适配工作
-- ❌ **调试困难**：问题定位需要深入 Rule Engine 内部逻辑，增加调试成本
-- ❌ **文档依赖**：需要持续关注 Rule Engine 的文档更新和API变更
-
-**年度维护成本估算**：
-- 版本升级适配：2-3次/年 × 3天 = 6-9天
-- Bug修复协调：4-5次/年 × 2天 = 8-10天
-- 知识传承：新成员学习曲线 5-7天
-- **总计：约 20-26 人天/年**
+| 维度 | Plan A: 复用 Rule Engine | Plan B: 独立 Condition Flow |
+|------|------------------------|----------------------------|
+| **开发周期** | 2-3周 | 1-2周 |
+| **学习成本** | 需学习 Rule Engine 架构、DSL 语法 | 简单阈值比较，无学习成本 |
+| **集成复杂度** | 需适配层转换 Metrics → Rule | 直接实现评估逻辑 |
+| **优势** | - | ✅ 节省 33%-50% 开发时间 |
 
 ---
 
-**方案B: 独立 Condition Flow**
+##### **2. 维护难度和迭代速度**
 
-```mermaid
-graph LR
-    A[需求变更] --> B{修改类型}
-    B -->|新增操作符| C[修改评估逻辑<br/>1-2小时]
-    B -->|调整阈值| D[修改配置<br/>10分钟]
-    B -->|Bug修复| E[团队自主修复<br/>0.5-1天]
-
-    C --> F[快速上线]
-    D --> F
-    E --> F
-
-    style C fill:#e1ffe1
-    style D fill:#e1ffe1
-    style E fill:#e1ffe1
-    style F fill:#e1ffe1
-```
-
-**维护优势**：
-- ✅ **团队自主可控**：所有代码在团队仓库，随时修改
-- ✅ **快速响应**：Bug修复和功能迭代无需跨团队协调
-- ✅ **简单直观**：逻辑简单，新成员快速上手
-- ✅ **无外部依赖**：不受外部系统升级影响
-
-**年度维护成本估算**：
-- Bug修复：2-3次/年 × 0.5天 = 1-1.5天
-- 功能增强：2-3次/年 × 1天 = 2-3天
-- 知识传承：新成员学习 1-2天
-- **总计：约 4-6.5 人天/年**
-
-**维护成本对比**: 方案B 节省 **75%** 的维护时间
-
-##### **3. 系统复杂度对比**
-
-**方案A: 复用 Rule Engine - 重度依赖架构**
-
-```mermaid
-graph TB
-    subgraph "Alert System"
-        API[Alert API]
-        TCE[Trigger Condition<br/>转换层]
-        AS[Alert Service]
-    end
-
-    subgraph "Rule Management Service"
-        RMS[Rule Management API]
-        RDE[Rule Definition Engine]
-        DB1[(Rule Database)]
-    end
-
-    subgraph "Risk Decision Service"
-        RDS[Decision Service]
-        DE[Decision Engine]
-        VE[Variable Evaluators<br/>100+ evaluators]
-    end
-
-    API -->|转换Metrics| TCE
-    TCE -->|创建临时Rule| RMS
-    RMS --> RDE
-    RDE --> VE
-    VE -->|评估结果| TCE
-    TCE -->|触发结果| AS
-
-    style TCE fill:#ffe1e1
-    style RMS fill:#fff4e1
-    style VE fill:#fff4e1
-```
-
-**复杂度问题**：
-1. **依赖链路长**：Alert → Rule Management → Decision Engine → Evaluators
-2. **数据转换多**：Metrics → RuleVariable → Expression → Result
-3. **服务调用多**：每次评估需要 2-3 次 RPC 调用
-4. **故障点多**：任何一个服务故障都会影响 Alert 系统
+| 维度 | Plan A | Plan B |
+|------|--------|--------|
+| **维护成本/年** | ~20-26 人天 | ~4-6.5 人天 |
+| **Bug修复** | 需跨团队协调，2天/次 | 团队自主，0.5天/次 |
+| **功能迭代** | 依赖 Rule Engine 团队排期 | 即时响应，1-2小时上线 |
+| **知识传承** | 新人学习曲线 5-7天 | 新人学习 1-2天 |
+| **优势** | - | ✅ 节省 75% 维护时间<br/>✅ 快速迭代，无依赖 |
 
 ---
 
-**方案B: 独立 Condition Flow - 轻量级架构**
+##### **3. 系统复杂度和外部依赖性**
 
-```mermaid
-graph TB
-    subgraph "Alert System"
-        API[Alert API]
-        TCE[Trigger Condition<br/>Engine]
-        AS[Alert Service]
-        DB[(Alert Database)]
-    end
-
-    API -->|Metrics| TCE
-    TCE -->|简单比较| TCE
-    TCE -->|触发结果| AS
-    AS --> DB
-
-    style TCE fill:#e1ffe1
-    style AS fill:#e1ffe1
+**Plan A: 重度依赖架构**
+```
+Alert → Rule Management → Decision Engine → 100+ Evaluators
+  ↓          ↓               ↓                  ↓
+RPC调用   数据转换       多次序列化         故障点多
 ```
 
-**简洁优势**：
-1. **无外部依赖**：所有逻辑在 Alert Service 内部
-2. **调用链短**：API → Engine → Service，单进程内调用
-3. **故障隔离**：Alert 系统独立运行，不受其他服务影响
-4. **易于测试**：纯函数逻辑，单元测试覆盖简单
+**Plan B: 轻量级架构**
+```
+Alert API → Condition Engine → Alert Service
+            ↓ (纯内存计算)
+        单进程调用，零依赖
+```
 
-##### **4. 性能对比**
+| 维度 | Plan A | Plan B |
+|------|--------|--------|
+| **依赖服务** | 2个外部服务 | 0 |
+| **调用链路** | 4层 | 1层 |
+| **故障点** | 4个 | 1个 |
+| **代码量** | ~200行 + 适配层 | ~30行 |
+| **优势** | - | ✅ 零依赖，架构简洁<br/>✅ 故障隔离，易于调试 |
 
-**测试场景**：评估 1000 个 Account 的 Metrics，每个 2 个条件
+---
 
-| 性能指标 | 方案A: Rule Engine | 方案B: Condition Flow |
-|---------|-------------------|---------------------|
-| **单次评估延迟** | 50-100ms (RPC调用) | 1-5ms (内存计算) |
-| **QPS** | ~100 (受限于RPC) | ~5000 (受限于CPU) |
-| **资源消耗** | 高（多次序列化/反序列化） | 低（纯内存计算） |
-| **扩展性** | 需要扩展 Rule Engine | 单机即可满足 |
+##### **4. 需求匹配程度**
 
-**性能差异原因**：
-- Rule Engine 设计用于**实时交易决策**（微秒级响应）
-- Alert 场景是**批处理模式**（分钟级检查）
-- Rule Engine 的高性能优化在 Alert 场景下是**过度设计**
-
-##### **5. 功能需求适配度**
-
-**Alert 触发条件的实际需求**：
+**Alert 实际需求**：99% 都是简单阈值比较
 ```python
-# 99% 的触发条件都是简单的阈值比较
-conditions = [
-    "block_rate > 0.3",           # ✅ 简单比较
-    "failed_auth_rate > 0.5",     # ✅ 简单比较
-    "transaction_count > 1000",   # ✅ 简单比较
-]
-
-# AND/OR 组合
-logic = "block_rate > 0.3 AND failed_auth_rate > 0.5"  # ✅ 简单组合
+"block_rate > 0.3"
+"failed_auth_rate > 0.5"
+"block_rate > 0.3 AND failed_auth_rate > 0.5"
 ```
 
-**Rule Engine 支持的复杂能力（Alert 不需要）**：
-```java
-// ❌ Alert 不需要这些复杂能力
-- DSL 脚本语言
-- Spring EL 表达式
-- 100+ VariableEvaluator
-- 嵌套规则
-- 动态变量计算
-- 规则优先级调度
-- 复杂的业务逻辑
-```
+**Rule Engine 能力**：支持 DSL、Spring EL、100+ Evaluators、嵌套规则等
 
-**结论**：Alert 只需要 Rule Engine **5%** 的能力，却要承担 **100%** 的复杂度。
+| 维度 | Plan A | Plan B |
+|------|--------|--------|
+| **需求覆盖** | 使用 5% 能力 | 完美匹配 100% 需求 |
+| **过度设计** | ❌ 承担 100% 复杂度 | ✅ 轻量级，恰到好处 |
 
-##### **6. 代码实现对比**
+---
 
-**方案A: 复用 Rule Engine（需要适配层）**
+##### **5. 功能适配程度**
+
+**性能对比**（评估 1000 个 Account，每个 2 条件）：
+
+| 指标 | Plan A | Plan B | 提升 |
+|------|--------|--------|------|
+| **延迟** | 50-100ms | 1-5ms | 10-20倍 |
+| **QPS** | ~100 | ~5000 | 50倍 |
+| **资源消耗** | 高（RPC序列化） | 低（纯内存） | - |
+
+---
+
+##### **6. 扩展性以及改造风险**
+
+**未来需求预测**：
+
+| 需求 | 概率 | Plan A | Plan B | 推荐 |
+|------|------|--------|--------|------|
+| 新增操作符 (contains, in) | 90% | 需 Rule Engine 支持 | 添加 case 分支 | B |
+| 时间范围条件 | 90% | 需适配 Variable | 添加比较逻辑 | B |
+| 复杂嵌套逻辑 | 10% | 原生支持 | 需递归实现 | A |
+
+**改造风险**：
+- Plan A → Plan B：❌ 高风险，需重写适配层
+- Plan B → Plan A：✅ 低风险，保留接口，切换后端即可
+
+**策略**：先用 Plan B，如需复杂能力再迁移（迁移成本可控）
+
+---
+
+#### 3.7.2 方案推荐
+
+**推荐方案：Plan B - 独立实现 Condition Flow**
+
+**核心理由**：
+
+| 优势维度 | 具体表现 |
+|---------|---------|
+| ⏱️ **更快交付** | 节省 33%-50% 开发时间 |
+| 💰 **更低成本** | 节省 75% 年度维护成本 |
+| 🎯 **更好匹配** | 完美适配当前需求，无过度设计 |
+| 🚀 **更快迭代** | 无依赖，1-2小时上线新功能 |
+| 🔧 **更易维护** | 代码简单，团队完全掌控 |
+| ⚡ **更高性能** | 快 10-20 倍 |
+
+**实施路径**：
 
 ```kotlin
-// 需要将 Metrics 转换为 Rule
-class MetricsToRuleAdapter {
-    fun convertToRule(metrics: List<Metric>, conditions: List<TriggerCondition>): RuleDefinition {
-        // 1. 构建 Variables
-        val variables = metrics.map { metric ->
-            RuleVariable(
-                tenant = "sentinel",
-                namespace = "alert",
-                name = metric.name,
-                type = "DOUBLE",
-                value = metric.value.toString()
-            )
-        }
-
-        // 2. 构建 DSL Expression
-        val expression = buildDSLExpression(conditions)  // 复杂的字符串拼接
-
-        // 3. 调用 Rule Management Service
-        return ruleManagementClient.createTemporaryRule(
-            RuleDefinition(
-                tenant = "sentinel",
-                namespace = "alert",
-                type = "DSL",
-                value = expression,
-                variables = variables,
-                evaluationStrategies = listOf(
-                    EvaluationStrategy(type = "IMMEDIATE")
-                )
-            )
-        )
-    }
-
-    // 4. 调用 Decision Service 评估
-    fun evaluate(rule: RuleDefinition, context: Map<String, Any>): Boolean {
-        val decisionRequest = DecisionRequest(
-            context = DecisionContext(
-                tenant = "sentinel",
-                domain = "alert",
-                flow = "trigger"
-            ),
-            target = BusinessTarget(data = context)
-        )
-
-        val result = decisionService.review(decisionRequest)
-        return result.code == DecisionCode.APPROVE
-    }
-}
-
-// 代码行数: ~200 行（不包括测试）
-// 依赖: rule-management-service, risk-decision-service
-// 复杂度: 高
-```
-
-**方案B: 独立 Condition Flow（直接实现）**
-
-```kotlin
-// 简单直观的实现
-class TriggerConditionEngine {
-
-    data class TriggerCondition(
-        val metricName: String,
-        val operator: String,  // >, >=, <, <=, ==, !=
-        val threshold: Double
-    )
-
-    fun evaluate(
-        metrics: Map<String, Double>,
-        conditions: List<TriggerCondition>,
-        logic: String = "AND"
-    ): Boolean {
-        val results = conditions.map { condition ->
-            val metricValue = metrics[condition.metricName] ?: return@map false
-
-            when (condition.operator) {
-                ">" -> metricValue > condition.threshold
-                ">=" -> metricValue >= condition.threshold
-                "<" -> metricValue < condition.threshold
-                "<=" -> metricValue <= condition.threshold
-                "==" -> metricValue == condition.threshold
-                "!=" -> metricValue != condition.threshold
-                else -> false
-            }
-        }
-
-        return when (logic) {
-            "AND" -> results.all { it }
-            "OR" -> results.any { it }
-            else -> false
-        }
-    }
-}
-
-// 代码行数: ~30 行（不包括测试）
-// 依赖: 无
-// 复杂度: 极低
-```
-
-**代码对比**：
-- 方案A: ~200 行，依赖 2 个外部服务
-- 方案B: ~30 行，零依赖
-- **代码量减少 85%**
-
-##### **7. 扩展性对比**
-
-**未来可能的需求**：
-
-| 需求 | 方案A: Rule Engine | 方案B: Condition Flow | 实现难度 |
-|------|-------------------|---------------------|---------|
-| 新增操作符（contains, in） | 需要 Rule Engine 支持 | 直接添加 case 分支 | B 更简单 |
-| 支持时间范围条件 | 需要适配 TimeWindow Variable | 添加时间比较逻辑 | B 更简单 |
-| 条件优先级排序 | Rule Engine 原生支持 | 需要自己实现 | A 更简单 |
-| 复杂嵌套逻辑 | Rule Engine 原生支持 | 需要递归实现 | A 更简单 |
-
-**评估**：
-- 前两个需求（90%概率）：方案B 更优
-- 后两个需求（10%概率）：方案A 更优
-
-**策略**：先用方案B，如果未来真的需要复杂能力，再迁移到 Rule Engine（迁移成本可控）
-
-##### **8. 风险评估**
-
-**方案A 风险**：
-1. 🔴 **高依赖风险**：Rule Engine 团队调整架构会直接影响 Alert
-2. 🔴 **技术债务风险**：引入重度依赖，长期维护成本高
-3. 🟡 **性能风险**：RPC 调用增加延迟，可能影响批量处理
-4. 🟡 **学习曲线风险**：团队成员需要学习 Rule Engine
-
-**方案B 风险**：
-1. 🟢 **功能缺失风险**（低）：当前需求简单，未来如需复杂能力可迁移
-2. 🟢 **性能风险**（低）：纯内存计算，性能远超需求
-3. 🟢 **维护风险**（低）：代码简单，团队完全掌控
-
-#### 3.7.3 推荐方案：独立实现 Condition Flow
-
-**推荐理由**：
-
-1. ✅ **开发成本低**：1-2周 vs 2-3周，节省 33%-50% 时间
-2. ✅ **维护成本低**：4-6.5 人天/年 vs 20-26 人天/年，节省 75%
-3. ✅ **系统更简洁**：零依赖，调用链短，易于调试
-4. ✅ **性能更好**：1-5ms vs 50-100ms，快 10-20 倍
-5. ✅ **团队自主**：不受外部团队影响，快速响应需求
-6. ✅ **适配度高**：完美匹配当前需求，无过度设计
-
-**实施建议**：
-
-```kotlin
-// Phase 1: MVP 实现（1周）
+// Phase 1: MVP（1周）
 class SimpleTriggerConditionEngine {
     fun evaluate(metrics: Map<String, Double>,
                  conditions: List<TriggerCondition>): Boolean {
-        // 支持 6 种基本操作符
+        // 支持 6 种操作符: >, >=, <, <=, ==, !=
         // 支持 AND/OR 逻辑
     }
 }
 
-// Phase 2: 增强功能（可选，按需实现）
-- 添加条件优先级排序
-- 支持时间范围条件
-- 添加更多操作符（contains, in, regex）
+// Phase 2: 按需增强
+- 更多操作符 (contains, in, regex)
+- 时间范围条件
+- 条件优先级
 
-// Phase 3: 未来迁移路径（如果真的需要）
-- 保留现有接口
-- 后端切换到 Rule Engine
-- 用户无感知升级
+// Phase 3: 未来迁移（如果需要）
+- 保留接口，切换后端到 Rule Engine
 ```
 
-**关键决策点**：
-
-> **奥卡姆剃刀原则**：如无必要，勿增实体。
-> Alert 的触发条件评估是一个**简单的阈值比较问题**，不需要引入复杂的规则引擎。
-
-**但是，Rule Engine 在以下场景必须使用**：
-- ✅ **自动部署规则**：AI 推荐的规则必须通过 Rule Management Service 部署
-- ✅ **规则管理**：商户手动创建的规则需要在 Rule Engine 中管理
+**职责划分**：
 
 ```mermaid
 graph LR
-    A[Metric Data] -->|简单阈值比较| B[Condition Flow<br/>独立实现]
-    B -->|触发Alert| C[AI Agent]
-    C -->|生成规则DSL| D[Rule Management<br/>复用现有]
-    D -->|部署规则| E[Risk Decision<br/>复用现有]
+    A[Metric Data] -->|简单阈值比较| B[Condition Flow<br/>✅ 独立实现]
+    B -->|触发 Alert| C[AI Agent]
+    C -->|生成规则 DSL| D[Rule Management<br/>✅ 复用现有]
+    D -->|部署规则| E[Risk Decision<br/>✅ 复用现有]
 
     style B fill:#e1ffe1
     style D fill:#fff4e1
     style E fill:#fff4e1
 ```
+
+**关键原则**：
+> **奥卡姆剃刀**：Alert 只需要 5% 的 Rule Engine 能力，不应承担 100% 的复杂度。
+
+**Rule Engine 必须用于**：
+- ✅ AI 推荐规则的部署
+- ✅ 商户手动创建的规则管理
+
+---
+
+#### 3.7.3 Plan A 实施流程（如选择 Rule Engine）
+
+作为参考，如果选择 Plan A 复用现有 Rule Engine，以下是详细的接入改造流程：
+
+```mermaid
+sequenceDiagram
+    participant MP as Metric Platform
+    participant API as Alert API
+    participant Adapter as Metrics→Rule<br/>适配层
+    participant RMS as Rule Management<br/>Service
+    participant DE as Decision Engine
+    participant AS as Alert Service
+
+    MP->>API: POST /api/v1/alerts/metrics<br/>{accountId, metrics}
+    API->>API: 验证请求
+
+    API->>Adapter: 转换 Metrics 为 RuleVariable
+    Note over Adapter: 转换逻辑<br/>metric_name → variable_name<br/>metric_value → variable_value
+
+    Adapter->>Adapter: 构建 RuleDiscoveryRequest
+    Note over Adapter: {<br/>  tenant: "awx"<br/>  namespace: "alert"<br/>  flow: "card_testing"<br/>  variables: [...]<br/>}
+
+    Adapter->>RMS: GET /rules/discovery<br/>{tenant, namespace, flow}
+    RMS->>RMS: 查询 RuleDefinition<br/>by tenant+namespace+flow
+    RMS-->>Adapter: 返回 RuleDefinition[]
+
+    alt 未找到规则
+        Adapter->>API: 返回：不触发
+        API->>MP: 200 OK (no alert)
+    else 找到规则
+        Adapter->>Adapter: 构建 DecisionRequest
+        Note over Adapter: 映射 RuleVariable 到<br/>DecisionEngine 格式
+
+        Adapter->>DE: POST /decision/evaluate<br/>{rules, variables}
+        DE->>DE: 使用 100+ Evaluators 评估<br/>DSL/Spring EL 解析
+        DE-->>Adapter: 返回 DecisionResult
+
+        Adapter->>Adapter: 解析 DecisionResult
+        Note over Adapter: 提取决策代码<br/>映射到 Alert 触发
+
+        alt Decision = BLOCK/REVIEW
+            Adapter->>AS: 触发 Alert 创建
+            AS->>AS: 生成 AI 摘要
+            AS->>AS: 保存 Alert
+            AS->>API: 返回 alertId
+            API->>MP: 201 Created
+        else Decision = APPROVE
+            Adapter->>API: 返回：不触发
+            API->>MP: 200 OK (no alert)
+        end
+    end
+```
+
+**关键接入步骤**：
+
+**步骤 1: 创建适配层** (Week 1-2)
+```kotlin
+class MetricsToRuleAdapter {
+    fun convertToRuleVariable(metrics: List<Metric>): List<RuleVariable> {
+        return metrics.map { metric ->
+            RuleVariable(
+                name = "metric_${metric.metric_name}",
+                type = "DOUBLE",
+                value = metric.metric_value.toString(),
+                source = "METRIC_PLATFORM"
+            )
+        }
+    }
+
+    fun buildRuleDiscoveryRequest(
+        context: AlertContext,
+        variables: List<RuleVariable>
+    ): RuleDiscoveryRequest {
+        return RuleDiscoveryRequest(
+            tenant = context.tenant,
+            namespace = "alert",
+            flow = context.alert_type.toLowerCase(),
+            variables = variables
+        )
+    }
+}
+```
+
+**步骤 2: 配置 RuleDefinition** (手动配置)
+```json
+{
+  "tenant": "awx",
+  "namespace": "alert",
+  "flow": "card_testing",
+  "type": "DSL",
+  "value": "metric_block_rate > 0.3 AND metric_failed_auth_rate > 0.5",
+  "evaluationStrategies": [
+    {
+      "type": "SPRING_EL",
+      "priority": 1
+    }
+  ],
+  "variables": [
+    {
+      "name": "metric_block_rate",
+      "type": "DOUBLE",
+      "source": "METRIC_PLATFORM"
+    },
+    {
+      "name": "metric_failed_auth_rate",
+      "type": "DOUBLE",
+      "source": "METRIC_PLATFORM"
+    }
+  ],
+  "status": "ACTIVE"
+}
+```
+
+**步骤 3: 处理 Decision Engine 响应**
+```kotlin
+class DecisionResultAdapter {
+    fun shouldTriggerAlert(decisionResult: DecisionResult): Boolean {
+        return when (decisionResult.code) {
+            DecisionCode.BLOCK, DecisionCode.REVIEW -> true
+            DecisionCode.APPROVE -> false
+            else -> false
+        }
+    }
+
+    fun extractTriggerReasons(decisionResult: DecisionResult): List<String> {
+        return decisionResult.details
+            .filter { it.matched }
+            .map { it.ruleName }
+    }
+}
+```
+
+**挑战与复杂度**：
+
+1. **数据映射复杂度**：
+   - Metrics 格式 ≠ RuleVariable 格式
+   - 需要双向转换
+   - 命名规范冲突
+
+2. **错误处理**：
+   - Rule Engine 服务宕机
+   - 网络超时（RPC 调用）
+   - 版本兼容性问题
+
+3. **性能开销**：
+   - 每次评估 2-3 次 RPC 调用
+   - 序列化/反序列化成本
+   - 网络延迟
+
+4. **维护负担**：
+   - Rule Engine API 变更 → Adapter 更新
+   - 版本升级协调
+   - 依赖外部团队
+
+**与 Plan B 对比**：
+
+| 方面 | Plan A (Rule Engine) | Plan B (独立实现) |
+|------|---------------------|------------------|
+| 代码复杂度 | 高（200+ 行适配层） | 低（30 行） |
+| 外部调用 | 2-3 次 RPC 调用 | 0 |
+| 延迟 | 50-100ms | 1-5ms |
+| 故障点 | 4 个（API, RMS, DE, Network） | 1 个（API） |
+| 团队自主性 | 低 | 高 |
 
 ---
 
