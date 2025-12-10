@@ -317,11 +317,162 @@ risk-sentinel-persistence/src/main/kotlin/com/airwallex/risk/sentinel/persistenc
 
 ## 7. 相关文档
 
-| 文档 | 路径 |
+### 7.1 文档索引
+
+| 文档 | 路径 | 说明 |
+|------|------|------|
+| 系统设计文档（英文） | `/Users/boyi.wang/Projects/AwxSentinel/AlertSystemDesign_EN.md` | 完整技术设计，含架构图、流程图、API 定义 |
+| 系统设计文档（中文） | `/Users/boyi.wang/Projects/AwxSentinel/AlertSystemDesign_CN.md` | 英文文档的中文翻译版本 |
+| Confluence 页面 | [Airwallex Sentinel Alert Service](https://airwallex.atlassian.net/wiki/spaces/AR/pages/4594368769) | 在线协作文档，包含最新讨论 |
+
+---
+
+### 7.2 AlertSystemDesign_EN.md 文档摘要
+
+**文档版本**: v1.0 (2025-11-19)
+**作者**: Boyi Wang
+
+#### 核心章节结构
+
+| 章节 | 内容 |
 |------|------|
-| 系统设计文档（英文） | `/Users/boyi.wang/Projects/AwxSentinel/AlertSystemDesign_EN.md` |
-| 系统设计文档（中文） | `/Users/boyi.wang/Projects/AwxSentinel/AlertSystemDesign_CN.md` |
-| Confluence 页面 | https://airwallex.atlassian.net/wiki/spaces/AR/pages/4594368769 |
+| **1. Overview** | 系统简介、核心功能 |
+| **2. System Architecture** | 整体架构图、分层说明 |
+| **3. Core Workflows** | 告警生成流程、AI 摘要生成、频控、聚合策略、Prometheus 集成 |
+| **4. Data Model** | ER 图、实体说明 |
+| **5. API Design** | 告警接收、查询、配置、操作 API |
+| **6. Notification Channel** | Slack、SMS、Webapp 配置 |
+| **7. Technical Implementation** | AI Agent、频控、消息队列 |
+| **8. Frontend Page Design** | 告警列表页、详情页 |
+| **9. Monitoring and Logging** | 监控指标、告警规则、日志标准 |
+| **10-14** | 安全、扩展性、部署、测试、发布计划 |
+
+#### 关键架构图（Mermaid）
+
+1. **整体架构图** - 展示外部系统、核心服务、数据层、通知渠道的关系
+2. **告警生成序列图** - Metric Platform → API → Trigger Engine → AI Agent → DB → Notification
+3. **AI 摘要生成流程** - 模板加载 → 上下文构建 → LLM 调用 → 响应解析
+4. **频控流程** - Redis 计数器、滑动窗口、速率限制
+5. **告警聚合流程** - Session-based 聚合、滑动窗口、严重级别升级
+6. **Prometheus 集成架构** - Exporter → Prometheus → Alertmanager → Webhook
+
+#### Trigger Engine 技术选型结论
+
+| 方案 | 选择 | 理由 |
+|------|------|------|
+| Plan A: 复用 Rule Engine | ❌ 不推荐 | 过度工程化，只用到 5% 能力，依赖外部团队 |
+| Plan B: 独立 Condition Flow | ✅ **推荐** | 简单高效，10-20x 性能提升，团队自治 |
+
+---
+
+### 7.3 Confluence 页面内容摘要
+
+**页面**: [Airwallex Sentinel Alert Service](https://airwallex.atlassian.net/wiki/spaces/AR/pages/4594368769)
+
+#### 主要内容
+
+| 章节 | 内容 |
+|------|------|
+| **1. Background** | 系统简介、核心功能列表 |
+| **2. Architecture** | 用户交互流程、系统架构图、告警生成流程图 |
+| **3. Core Work Flow** | Trigger Engine（Prometheus）、Alert Gateway、聚合流程、AI Summary、频控 |
+| **4. User Case** | Card Testing Alert、Max Ticket Size Alert、Issuing Alert |
+| **5. Data Model** | ER 图、实体描述 |
+| **6. API Design** | Alert Ingestion、Query、Configuration、Action API |
+| **7. Notification Channel** | Slack、SMS、Webapp 配置要求 |
+
+#### Prometheus 作为 Trigger Engine 的关键设计
+
+**选择 Prometheus 的原因**:
+- 多数据源支持（REST API、BigQuery、Kafka 等）
+- PromQL 支持复杂条件逻辑（时间窗口聚合、异常检测）
+- 成熟稳定，生态完善
+- 可水平扩展
+
+**PromQL 能力示例**:
+```promql
+# 简单阈值
+block_rate > 0.3
+
+# 多条件组合
+A > 0.3 AND B > 0.5
+
+# 时间窗口聚合
+avg_over_time(metric[10m])
+
+# 环比变化
+metric / metric offset 1h
+
+# 异常检测（3倍标准差）
+(metric - avg) / stddev > 3
+```
+
+**Prometheus Rule 配置示例**:
+```yaml
+groups:
+  - name: sentinel_alerts
+    rules:
+      - alert: CardTestingDetected
+        expr: sentinel_block_rate > 0.2 AND sentinel_failed_auth_rate > 0.3
+        for: 5m
+        labels:
+          alert_type: CARD_TESTING
+          severity: P2
+        annotations:
+          summary: "Card testing attack detected"
+          account_id: "{{ $labels.account_id }}"
+```
+
+**Alertmanager Webhook 数据结构**:
+```kotlin
+data class AlertmanagerPayload(
+    val version: String,
+    val groupKey: String,
+    val status: String,  // "firing" | "resolved"
+    val receiver: String,
+    val groupLabels: Map<String, String>,
+    val commonLabels: Map<String, String>,
+    val commonAnnotations: Map<String, String>,
+    val externalURL: String,
+    val alerts: List<AlertmanagerAlert>
+)
+
+data class AlertmanagerAlert(
+    val status: String,
+    val labels: Map<String, String>,
+    val annotations: Map<String, String>,
+    val startsAt: String,
+    val endsAt: String,
+    val generatorURL: String,
+    val fingerprint: String
+)
+```
+
+#### AI Summary Prompt 模板示例
+
+```
+You are a fraud detection expert analyzing payment metrics for merchant {{merchant_name}}.
+
+Metrics Data:
+{{metrics_data}}
+
+Historical Context:
+{{historical_alerts}}
+
+Please analyze the above metrics and provide:
+1. A concise title (max 100 chars)
+2. A summary of the potential fraud attack (max 300 words)
+3. Severity level (P1/P2/P3)
+4. Suggested immediate action
+
+Format your response as JSON:
+{
+  "title": "...",
+  "summary": "...",
+  "severity": "...",
+  "suggested_action": "..."
+}
+```
 
 ---
 
@@ -384,3 +535,4 @@ cd /Users/boyi.wang/Projects/risk-sentinel
 | 日期 | 更新内容 |
 |------|----------|
 | 2025-12-10 | 创建文档；完成 Flyway 迁移脚本、Entity、Repository |
+| 2025-12-10 | 补充引用文档摘要：AlertSystemDesign_EN.md、Confluence 页面内容 |
