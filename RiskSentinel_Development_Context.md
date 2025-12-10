@@ -36,7 +36,7 @@ Risk Sentinel Alert System 是 Airwallex Sentinel 的核心模块之一，负责
 - **消息队列**: Kafka
 - **Web 服务器**: Jetty
 - **构建工具**: Gradle 7.x (Kotlin DSL)
-- **触发引擎**: Prometheus + Alertmanager
+- **触发引擎**: risk-alert-pipeline 服务（独立服务，基于 Flink 实现）
 
 ---
 
@@ -206,7 +206,7 @@ erDiagram
 | `alert_dynamic` | 告警动态字段（状态、会话、升级），分离以提高写入性能 |
 | `alert_relationship` | 告警与商户账户、通知渠道的关联 |
 | `alert_comment` | 告警评论/事件记录（触发事件、用户备注、系统日志） |
-| `alert_trigger_log` | Prometheus 触发原始日志，用于审计和分析 |
+| `alert_trigger_log` | risk-alert-pipeline 触发原始日志，用于审计和分析 |
 | `notification` | 通知记录，支持多渠道 |
 | `alert_config` | 商户级别的告警配置和通知偏好 |
 
@@ -227,30 +227,35 @@ erDiagram
 
 | 阶段 | 内容 | 优先级 | 状态 |
 |------|------|--------|------|
-| Phase 2 | Trigger Condition Engine（条件评估引擎） | P0 | 待开发 |
-| Phase 4 | Alert Service 核心业务（创建、聚合、升级） | P0 | 待开发 |
-| Phase 5 | Frequency Control 频控服务 | P1 | 待开发 |
-| Phase 6 | AI Agent 服务（LLM 集成） | P1 | 待开发 |
-| Phase 7 | Notification Service 通知服务 | P1 | 待开发 |
-| Phase 8 | REST API 层 | P1 | 待开发 |
-| Phase 9 | 集成与端到端测试 | P2 | 待开发 |
+| Phase 2 | Trigger Engine 接口定义（接收 risk-alert-pipeline 事件的 DTO/API） | P0 | 待开发 |
+| Phase 3 | Alert Service 核心业务（创建、聚合、升级） | P0 | 待开发 |
+| Phase 4 | Frequency Control 频控服务 | P1 | 待开发 |
+| Phase 5 | AI Agent 服务（LLM 集成） | P1 | 待开发 |
+| Phase 6 | Notification Service 通知服务 | P1 | 待开发 |
+| Phase 7 | REST API 层 | P1 | 待开发 |
+| Phase 8 | 集成与端到端测试 | P2 | 待开发 |
+| Phase 9 | 图表生成服务（Python 图片库生成 Metric 图表，用于告警通知） | P2 | 待开发 |
 
 ---
 
 ## 5. 关键设计决策
 
-### 5.1 Trigger Engine 选择 Prometheus
+### 5.1 Trigger Engine 使用 risk-alert-pipeline 服务
 
-**原因**：
-- 多数据源支持（REST API、BigQuery、Kafka 等）
-- PromQL 支持复杂条件逻辑、时间窗口聚合、异常检测
-- 成熟稳定，生态完善
-- 可水平扩展
+**服务说明**：
+- `risk-alert-pipeline` 是一个独立的 Flink 流处理服务
+- 负责从 Kafka 消费 Metric 数据，评估触发条件
+- 触发后通过 Kafka/HTTP 将告警事件发送给 Risk Sentinel
 
 **数据流**：
 ```
-Prometheus 触发 → Alertmanager → Webhook → Sentinel Alert System
+Metric Platform → Kafka → risk-alert-pipeline → Kafka/HTTP → Risk Sentinel Alert System
 ```
+
+**优势**：
+- 与现有 Metric Platform 无缝集成
+- 基于 Flink 的流处理能力，支持复杂的时间窗口聚合
+- 独立服务，职责清晰，便于扩展和维护
 
 ### 5.2 Alert 聚合策略
 
@@ -338,7 +343,7 @@ risk-sentinel-persistence/src/main/kotlin/com/airwallex/risk/sentinel/persistenc
 |------|------|
 | **1. Overview** | 系统简介、核心功能 |
 | **2. System Architecture** | 整体架构图、分层说明 |
-| **3. Core Workflows** | 告警生成流程、AI 摘要生成、频控、聚合策略、Prometheus 集成 |
+| **3. Core Workflows** | 告警生成流程、AI 摘要生成、频控、聚合策略、risk-alert-pipeline 集成 |
 | **4. Data Model** | ER 图、实体说明 |
 | **5. API Design** | 告警接收、查询、配置、操作 API |
 | **6. Notification Channel** | Slack、SMS、Webapp 配置 |
@@ -350,18 +355,19 @@ risk-sentinel-persistence/src/main/kotlin/com/airwallex/risk/sentinel/persistenc
 #### 关键架构图（Mermaid）
 
 1. **整体架构图** - 展示外部系统、核心服务、数据层、通知渠道的关系
-2. **告警生成序列图** - Metric Platform → API → Trigger Engine → AI Agent → DB → Notification
+2. **告警生成序列图** - Metric Platform → Kafka → risk-alert-pipeline → Risk Sentinel → AI Agent → DB → Notification
 3. **AI 摘要生成流程** - 模板加载 → 上下文构建 → LLM 调用 → 响应解析
 4. **频控流程** - Redis 计数器、滑动窗口、速率限制
 5. **告警聚合流程** - Session-based 聚合、滑动窗口、严重级别升级
-6. **Prometheus 集成架构** - Exporter → Prometheus → Alertmanager → Webhook
+6. **risk-alert-pipeline 集成架构** - Kafka Consumer → Flink 条件评估 → Kafka/HTTP → Risk Sentinel
 
 #### Trigger Engine 技术选型结论
 
 | 方案 | 选择 | 理由 |
 |------|------|------|
 | Plan A: 复用 Rule Engine | ❌ 不推荐 | 过度工程化，只用到 5% 能力，依赖外部团队 |
-| Plan B: 独立 Condition Flow | ✅ **推荐** | 简单高效，10-20x 性能提升，团队自治 |
+| Plan B: Prometheus + Alertmanager | ❌ 不采用 | 需要额外部署和维护 Prometheus 集群 |
+| Plan C: risk-alert-pipeline (Flink) | ✅ **采用** | 与现有 Metric Platform 无缝集成，复用 Flink 基础设施 |
 
 ---
 
@@ -375,76 +381,52 @@ risk-sentinel-persistence/src/main/kotlin/com/airwallex/risk/sentinel/persistenc
 |------|------|
 | **1. Background** | 系统简介、核心功能列表 |
 | **2. Architecture** | 用户交互流程、系统架构图、告警生成流程图 |
-| **3. Core Work Flow** | Trigger Engine（Prometheus）、Alert Gateway、聚合流程、AI Summary、频控 |
+| **3. Core Work Flow** | Trigger Engine（risk-alert-pipeline）、Alert Gateway、聚合流程、AI Summary、频控 |
 | **4. User Case** | Card Testing Alert、Max Ticket Size Alert、Issuing Alert |
 | **5. Data Model** | ER 图、实体描述 |
 | **6. API Design** | Alert Ingestion、Query、Configuration、Action API |
 | **7. Notification Channel** | Slack、SMS、Webapp 配置要求 |
 
-#### Prometheus 作为 Trigger Engine 的关键设计
+#### risk-alert-pipeline 作为 Trigger Engine 的关键设计
 
-**选择 Prometheus 的原因**:
-- 多数据源支持（REST API、BigQuery、Kafka 等）
-- PromQL 支持复杂条件逻辑（时间窗口聚合、异常检测）
-- 成熟稳定，生态完善
-- 可水平扩展
+**选择 risk-alert-pipeline 的原因**:
+- 与现有 Metric Platform 无缝集成
+- 基于 Flink 的流处理能力，支持复杂的时间窗口聚合
+- 复用现有 Flink 基础设施，无需额外部署 Prometheus
+- 团队自治，便于扩展和维护
 
-**PromQL 能力示例**:
-```promql
-# 简单阈值
-block_rate > 0.3
-
-# 多条件组合
-A > 0.3 AND B > 0.5
-
-# 时间窗口聚合
-avg_over_time(metric[10m])
-
-# 环比变化
-metric / metric offset 1h
-
-# 异常检测（3倍标准差）
-(metric - avg) / stddev > 3
-```
-
-**Prometheus Rule 配置示例**:
+**触发条件配置示例**:
 ```yaml
-groups:
-  - name: sentinel_alerts
-    rules:
-      - alert: CardTestingDetected
-        expr: sentinel_block_rate > 0.2 AND sentinel_failed_auth_rate > 0.3
-        for: 5m
-        labels:
-          alert_type: CARD_TESTING
-          severity: P2
-        annotations:
-          summary: "Card testing attack detected"
-          account_id: "{{ $labels.account_id }}"
+alert_rules:
+  - name: CardTestingDetected
+    conditions:
+      - metric: block_rate
+        operator: ">"
+        threshold: 0.2
+      - metric: failed_auth_rate
+        operator: ">"
+        threshold: 0.3
+    window: 5m
+    labels:
+      alert_type: CARD_TESTING
+      severity: P2
+    annotations:
+      summary: "Card testing attack detected"
 ```
 
-**Alertmanager Webhook 数据结构**:
+**risk-alert-pipeline 输出数据结构**:
 ```kotlin
-data class AlertmanagerPayload(
-    val version: String,
-    val groupKey: String,
+data class AlertTriggerEvent(
+    val alertName: String,
+    val alertType: String,
     val status: String,  // "firing" | "resolved"
-    val receiver: String,
-    val groupLabels: Map<String, String>,
-    val commonLabels: Map<String, String>,
-    val commonAnnotations: Map<String, String>,
-    val externalURL: String,
-    val alerts: List<AlertmanagerAlert>
-)
-
-data class AlertmanagerAlert(
-    val status: String,
+    val severity: String,
+    val fingerprint: String,
+    val accountId: String,
+    val metricsData: Map<String, Any>,
     val labels: Map<String, String>,
     val annotations: Map<String, String>,
-    val startsAt: String,
-    val endsAt: String,
-    val generatorURL: String,
-    val fingerprint: String
+    val triggeredAt: Instant
 )
 ```
 
@@ -536,3 +518,19 @@ cd /Users/boyi.wang/Projects/risk-sentinel
 |------|----------|
 | 2025-12-10 | 创建文档；完成 Flyway 迁移脚本、Entity、Repository |
 | 2025-12-10 | 补充引用文档摘要：AlertSystemDesign_EN.md、Confluence 页面内容 |
+| 2025-12-10 | 创建 8 个阶段分支和对应 MR；Trigger Engine 改为使用 risk-alert-pipeline 服务 |
+| 2025-12-10 | 新增 Phase 9 图表生成服务（Python 图片库生成 Metric 图表用于告警通知） |
+
+
+## 11. 分支分阶段管理
+| 阶段      | 分支名                                      | 内容                         |
+  |---------|------------------------------------------|----------------------------|
+| Phase 1 | feature/AR-7572-phase1-project-skeleton  | 项目骨架 + Entity + Repository |
+| Phase 2 | feature/AR-7572-phase2-trigger-engine    | Trigger Engine 接口定义（DTO/API，接收 risk-alert-pipeline 事件） |
+| Phase 3 | feature/AR-7572-phase3-alert-service     | Alert Service 核心业务         |
+| Phase 4 | feature/AR-7572-phase4-frequency-control | 频控服务                       |
+| Phase 5 | feature/AR-7572-phase5-ai-agent          | AI Agent / LLM 集成          |
+| Phase 6 | feature/AR-7572-phase6-notification      | 通知服务                       |
+| Phase 7 | feature/AR-7572-phase7-rest-api          | REST API 层                 |
+| Phase 8 | feature/AR-7572-phase8-integration-test  | 集成与端到端测试                   |
+| Phase 9 | feature/AR-7572-phase9-chart-generation  | 图表生成服务（Python 图片库生成 Metric 图表） |
